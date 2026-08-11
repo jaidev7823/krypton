@@ -1,4 +1,7 @@
 
+Build a single-request JSON engine where the player creates a character with a goal, personality and starting position and must devise their own plan to achieve it inside any fictional world, while every canon character in that world acts as an autonomous, self-motivated player with living stats, driven by one LLM call that outputs structured dialogue, internal thoughts and state changes for a game UI with real voice audio.
+
+
 **1.
  Player Setup Module World selection + character creation - player 
 defines name, goal, personality, background, starting position.**
