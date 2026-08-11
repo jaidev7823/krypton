@@ -360,3 +360,13 @@ def api_session(session_id: str) -> dict:
         "character_states": row.character_states,
         "conversation": row.conversation,
     }
+
+
+@app.get("/api/skill/{concept}")
+def api_skill(concept: str) -> dict:
+    """Return a skill definition from the active skill book (for the Coach)."""
+    book = load_skill_bible("Never Split the Difference")
+    for skill in book.skills:
+        if skill.id.upper() == concept.strip().upper():
+            return skill.model_dump(mode="json")
+    raise HTTPException(404, f"skill {concept} not found in {book.book}")

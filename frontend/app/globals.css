@@ -1,0 +1,40 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --bg: #0b0b10;
+  --surface: #14141c;
+  --surface-2: #1b1b25;
+  --border: #262630;
+  --text: #e9e6e0;
+  --muted: #9b98a5;
+  --accent: #e11d48;
+  --accent-soft: rgba(225, 29, 72, 0.14);
+  --trust: #22c55e;
+  --suspicion: #ef4444;
+}
+
+html,
+body {
+  background: var(--bg);
+  color: var(--text);
+}
+
+* {
+  scrollbar-width: thin;
+  scrollbar-color: #33333f transparent;
+}
+
+@layer utilities {
+  .blur-thought {
+    filter: blur(6px);
+    user-select: none;
+    cursor: pointer;
+    transition: filter 0.2s ease;
+  }
+  .blur-thought.revealed {
+    filter: blur(0);
+    user-select: text;
+  }
+}
