@@ -120,22 +120,57 @@ def _current_model() -> str:
     return GEMINI_MODEL
 
 
-def call_json(system: str, user: dict, response_model: Type[T], retries: int = 3) -> T:
+def call_json(
+    system: str,
+    user: dict,
+    response_model: Type[T],
+    retries: int = 3,
+    agent: str = "default",
+    on_attempt=None,
+) -> T:
     """Call the LLM and coerce output into ``response_model``.
 
     Retries with a corrective hint when JSON or validation fails.
+    ``on_attempt`` is an optional callback invoked after every LLM round-trip
+    with (system, user, raw_text, parsed_model_or_None, success, error) so the
+    caller can persist an audit trail (see db.log_agent_call).
     """
     last_err: Exception | None = None
     for attempt in range(1, retries + 1):
+        raw_text = ""
         try:
-            text = raw_call(system, user)
-            parsed = json.loads(_extract_json(text))
-            return response_model.model_validate(parsed)
+            raw_text = raw_call(system, user)
+            parsed = json.loads(_extract_json(raw_text))
+            model = response_model.model_validate(parsed)
+            _notify(on_attempt, system, user, raw_text, model, True, "", attempt)
+            return model
         except (json.JSONDecodeError, ValidationError) as e:
             last_err = e
             logger.warning("LLM bad output attempt %d/%d err=%s", attempt, retries, e)
+            _notify(on_attempt, system, user, raw_text, None, False, str(e), attempt)
             user = {**user, "_retry_hint": f"Previous output was invalid JSON or schema. Err: {e}. Output ONLY valid JSON matching the schema."}
+        except Exception as e:  # network / provider errors
+            last_err = e
+            logger.warning("LLM call failed attempt %d/%d err=%s", attempt, retries, e)
+            _notify(on_attempt, system, user, raw_text, None, False, str(e), attempt)
     raise RuntimeError(f"LLM failed after {retries} retries: {last_err}")
+
+
+def _notify(on_attempt, system, user, raw_text, model, success, error, attempt) -> None:
+    if on_attempt is None:
+        return
+    try:
+        on_attempt(
+            system=system,
+            user_payload=user,
+            raw_response=raw_text,
+            parsed=model.model_dump(mode="json") if model is not None else None,
+            success=success,
+            error=error,
+            attempt=attempt,
+        )
+    except Exception:  # never let logging break the game
+        logger.exception("on_attempt callback failed")
 
 
 def available_provider() -> str:

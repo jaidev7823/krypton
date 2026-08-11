@@ -243,6 +243,38 @@ def _run_turn(body: TurnRequest) -> TurnResponse:
     mission_state = row.mission_state or {"current": None, "history": []}
     conversation = row.conversation
 
+    turn_number = last_turn_number(row.id) + 1
+
+    def log_agent_attempt(
+        system: str,
+        user_payload: dict,
+        raw_response: str,
+        parsed,
+        success: bool,
+        error: str,
+        attempt: int,
+        agent: str,
+    ) -> None:
+        db.log_agent_call(
+            session_id=row.id,
+            turn_number=turn_number,
+            agent=agent,
+            attempt=attempt,
+            provider=llm_caller.available_provider(),
+            model=llm_caller._current_model(),
+            system_prompt=system,
+            user_payload=user_payload,
+            raw_response=raw_response,
+            parsed_output=parsed,
+            success=success,
+            error=error,
+        )
+
+    def on_attempt(agent: str):
+        def _cb(**kwargs):
+            log_agent_attempt(**kwargs, agent=agent)
+        return _cb
+
     scene = {
         "location": (mission_state.get("current") or {}).get("location") or world.world.starting_location,
         "characters_present": characters_present(character_states),
@@ -251,7 +283,9 @@ def _run_turn(body: TurnRequest) -> TurnResponse:
 
     # R1 - Listener / Teacher
     r1_system, r1_user = build_r1_prompt(skill, player, mctx, body.new_player_input, conversation)
-    r1 = llm_caller.call_json(r1_system, r1_user, SkillFeedback)
+    r1 = llm_caller.call_json(
+        r1_system, r1_user, SkillFeedback, agent="listener", on_attempt=on_attempt("listener")
+    )
 
     # R2 - Character Brain, one per character in scene (parallel)
     def _char_call(cid: str):
@@ -265,7 +299,10 @@ def _run_turn(body: TurnRequest) -> TurnResponse:
             r1_output=r1.model_dump(mode="json"),
             world_name=world.world.name,
         )
-        return llm_caller.call_json(r2_system, r2_user, CharacterBrainOutput)
+        return llm_caller.call_json(
+            r2_system, r2_user, CharacterBrainOutput,
+            agent=f"brain:{cid}", on_attempt=on_attempt(f"brain:{cid}"),
+        )
 
     present = characters_present(character_states)
     r2_outputs: list[CharacterBrainOutput] = []
@@ -282,7 +319,9 @@ def _run_turn(body: TurnRequest) -> TurnResponse:
         [o.model_dump(mode="json") for o in r2_outputs],
         conversation,
     )
-    r3 = llm_caller.call_json(r3_system, r3_user, NarratorOutput)
+    r3 = llm_caller.call_json(
+        r3_system, r3_user, NarratorOutput, agent="narrator", on_attempt=on_attempt("narrator")
+    )
 
     # Apply state changes
     for out in r2_outputs:
@@ -301,7 +340,6 @@ def _run_turn(body: TurnRequest) -> TurnResponse:
         if out.dialogue.strip():
             conversation.append({"speaker": out.character_id, "text": out.dialogue})
 
-    turn_number = last_turn_number(row.id) + 1
     game_turn = merge_turn(
         turn_id=turn_number,
         r1_output=r1,
@@ -345,6 +383,16 @@ def api_audio(body: AudioRequest) -> dict:
     if not body.dialogue.strip():
         raise HTTPException(400, "dialogue required")
     return generate_voice(body.character_id, body.dialogue)
+
+
+@app.get("/api/session/{session_id}/calls")
+def api_session_calls(session_id: str) -> dict:
+    """Full LLM audit trail for a session: every prompt + raw response."""
+    rows = db.get_agent_calls(session_id)
+    return {
+        "session_id": session_id,
+        "calls": [r.model_dump(mode="json") for r in rows],
+    }
 
 
 @app.get("/api/session/{session_id}")
