@@ -5,6 +5,8 @@ import { useGameStore, ensureAudioPath } from "@/store/useGameStore";
 import { PFP } from "./PFP";
 import type { ChatEntry, GameTurnCharacter } from "@/lib/types";
 
+const API_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
+
 export function CharacterMessage({
   entry,
   characters,
@@ -29,7 +31,7 @@ export function CharacterMessage({
     (async () => {
       const path = await ensureAudioPath(audioPaths, entry.speaker, entry.text);
       if (cancelled || !path) return;
-      audioRef.current = new Audio(`http://localhost:8000${path}`);
+      audioRef.current = new Audio(`${API_URL}${path}`);
       setPlaying(true);
       audioRef.current
         .play()
@@ -47,7 +49,7 @@ export function CharacterMessage({
     const path = await ensureAudioPath(audioPaths, entry.speaker, entry.text);
     if (!path) return;
     if (audioRef.current) audioRef.current.pause();
-    audioRef.current = new Audio(`http://localhost:8000${path}`);
+    audioRef.current = new Audio(`${API_URL}${path}`);
     setPlaying(true);
     audioRef.current.play().catch(() => setPlaying(false));
     audioRef.current.onended = () => setPlaying(false);
