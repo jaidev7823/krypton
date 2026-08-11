@@ -1,0 +1,15 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# Zed editor
+.zed/
+backend/logs/
+*/.env
+.env
+backend/data
+
+logs
+backend/data/
