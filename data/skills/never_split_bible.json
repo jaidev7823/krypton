@@ -1,0 +1,207 @@
+{
+  "book": "Never Split the Difference - Chris Voss",
+  "meta": {
+    "purpose": "Core mechanic for negotiation game. Used by Listener to detect player skill, and by Character Brain to set challenges.",
+    "how_to_use": "Request 1 uses how_to_detect. Request 2 uses challenge_for_player.required_concept"
+  },
+  "skills": [
+    {
+      "id": "MIRRORING",
+      "name": "Mirroring",
+      "definition": "Repeat the last 1-3 critical words of opponent's last sentence as a question to get them to elaborate and feel understood.",
+      "psychology": "Forces opponent to feel heard and expand without feeling interrogated.",
+      "example_good": [
+        {
+          "opponent": "I'm alone here, no one believes my father.",
+          "player": "Alone here?"
+        },
+        {
+          "opponent": "Kira is justice.",
+          "player": "Justice?"
+        }
+      ],
+      "example_bad": [
+        "Repeating full sentence: 'You are alone here no one believes your father?' -> Too long",
+        "Adding own opinion: 'Alone here? That's sad' -> Not pure mirror"
+      ],
+      "how_to_detect": {
+        "rule": "Does player response contain EXACT 1-3 word sequence from END of previous speaker's last sentence? Must be followed by ? or upward inflection. Must NOT add new interpretation words.",
+        "keywords_check": "Look at last 8 words of opponent, see if player repeats 1-3 of them verbatim.",
+        "valid": true
+      },
+      "game_effect": {
+        "if_correct": {
+          "trust": 10,
+          "suspicion": -10,
+          "info_reveal": "Target elaborates, reveals extra detail about plan or emotion"
+        },
+        "if_wrong": {
+          "trust": 0,
+          "suspicion": 5,
+          "reason": "Mirroring too long or parrot-like, feels mocking"
+        },
+        "feedback_template": "Good mirror - you got them to elaborate on '{mirrored_words}'"
+      }
+    },
+    {
+      "id": "LABELING",
+      "name": "Labeling",
+      "definition": "Name the emotion opponent is feeling. Must start with 'It seems like...' / 'It looks like...' / 'It sounds like...' + emotion.",
+      "psychology": "Validates negative emotion, diffuses it without agreeing. Makes opponent feel understood.",
+      "example_good": [
+        "It seems like you're worried no one believes your father",
+        "It looks like you feel pressured to prove Kira is evil",
+        "It sounds like you're angry that I questioned you"
+      ],
+      "example_bad": [
+        "You are worried (direct accusation - no softener)",
+        "I think you are worried (starts with I think, not It seems)",
+        "It seems like you are Kira (accusation, not emotion)"
+      ],
+      "how_to_detect": {
+        "rule": "Starts with 'It seems like' OR 'It looks like' OR 'It sounds like' (case-insensitive). Next words must contain emotion word: worried, angry, scared, alone, pressured, suspicious, frustrated, tired, lonely, afraid, upset, etc. Must NOT be accusation of fact (e.g. 'It seems like you are Kira').",
+        "required_prefix": [
+          "it seems like",
+          "it looks like",
+          "it sounds like"
+        ],
+        "emotion_list": [
+          "worried",
+          "scared",
+          "afraid",
+          "angry",
+          "frustrated",
+          "alone",
+          "lonely",
+          "pressured",
+          "suspicious",
+          "tired",
+          "upset",
+          "sad",
+          "hurt",
+          "annoyed",
+          "nervous"
+        ]
+      },
+      "game_effect": {
+        "if_correct_emotion": {
+          "trust": 15,
+          "suspicion": -5,
+          "stress": -10
+        },
+        "if_wrong_emotion": {
+          "trust": -10,
+          "suspicion": 10,
+          "reason": "Labeled wrong emotion, feels misunderstood"
+        },
+        "feedback_template": "Perfect labeling - you named their '{emotion}' without accusing"
+      }
+    },
+    {
+      "id": "ACCUSATION_AUDIT",
+      "name": "Accusation Audit",
+      "definition": "Proactively list the worst things opponent could be thinking about you, before they say it. Starts with 'You probably think...' / 'You might think...' / 'You likely think...'",
+      "psychology": "Disarms suspicion by voicing their fears first. Shows vulnerability and self-awareness.",
+      "example_good": [
+        "You probably think I'm just making up my father story for attention",
+        "You might think I'm trying to use you to get to L",
+        "You probably think I'm working with Kira"
+      ],
+      "example_bad": [
+        "I think you think I'm lying (weak framing)",
+        "You are thinking I'm lying (direct, not audit)"
+      ],
+      "how_to_detect": {
+        "rule": "Starts with 'You probably think' OR 'You might think' OR 'You likely think' OR 'You must think' OR 'You'd think'. Must list a NEGATIVE assumption about player.",
+        "required_prefix": [
+          "you probably think",
+          "you might think",
+          "you likely think",
+          "you must think",
+          "you'd think",
+          "you probably feel like",
+          "you must feel like"
+        ]
+      },
+      "game_effect": {
+        "if_correct": {
+          "trust": 20,
+          "suspicion": -15,
+          "note": "Highest trust boost, but requires genuine vulnerability linked to player background"
+        },
+        "feedback_template": "Great audit - you disarmed them by saying their fear out loud"
+      }
+    },
+    {
+      "id": "CALIBRATED_QUESTION",
+      "name": "Calibrated Question",
+      "definition": "Ask How/What questions that make opponent feel in control and force them to solve your problem.",
+      "psychology": "Gives illusion of control, forces other side to consider your perspective.",
+      "example_good": [
+        "How am I supposed to prove my father's innocence when everyone thinks Kira is justice?",
+        "What would need to happen for you to trust my story?",
+        "How can I show you I'm not Kira?"
+      ],
+      "example_bad": [
+        "Why do you suspect me? (Why = accusation, never use)",
+        "Are you Kira? (Yes/No, not calibrated)",
+        "Do you trust me? (Closed)"
+      ],
+      "how_to_detect": {
+        "rule": "Question starts with 'How' OR 'What' (What / How). Must be open-ended, not yes/no. Must NOT start with Why, Are, Do, Is, Can you.",
+        "required_prefix": [
+          "how",
+          "what"
+        ],
+        "forbidden_prefix": [
+          "why",
+          "are you",
+          "do you",
+          "is it",
+          "can you"
+        ]
+      },
+      "game_effect": {
+        "if_correct": {
+          "trust": 10,
+          "suspicion": -5,
+          "info_reveal": "Forces autonomous player to reveal part of plan or give clear answer"
+        },
+        "feedback_template": "Good calibrated question - you made them feel in control while getting info"
+      }
+    },
+    {
+      "id": "NO_ORIENTED_QUESTION",
+      "name": "No-Oriented Question",
+      "definition": "Ask question where 'No' is safe answer, making opponent feel safe to say yes later. 'Have you given up on...?'",
+      "psychology": "No feels safe. People hate saying yes too quickly.",
+      "example_good": [
+        "Have you given up on finding who framed my father?",
+        "Would it be a bad idea to talk to L about this?"
+      ],
+      "example_bad": [
+        "Do you want to help me? (yes-oriented, pressure)"
+      ],
+      "how_to_detect": {
+        "rule": "Starts with 'Have you given up on' OR 'Would it be a bad idea' OR 'Is it a bad idea' OR 'Would it be ridiculous'"
+      },
+      "game_effect": {
+        "if_correct": {
+          "trust": 12,
+          "suspicion": -8
+        }
+      }
+    }
+  ],
+  "scoring": {
+    "level_up_rule": "3 correct tactics in a row in same mission = suspicion drops by 25 extra",
+    "fail_rule": "2 wrong tactics or missed challenge = suspicion +20, mission risk of failure",
+    "detection_priority": [
+      "ACCUSATION_AUDIT",
+      "LABELING",
+      "MIRRORING",
+      "CALIBRATED_QUESTION",
+      "NO_ORIENTED_QUESTION"
+    ]
+  }
+}
