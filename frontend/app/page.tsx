@@ -3,7 +3,6 @@
 import { useGameStore } from "@/store/useGameStore";
 import { GamePage } from "@/components/GamePage";
 import { MissionLobbyScreen } from "@/components/MissionLobbyScreen";
-import { PlanElicitationScreen } from "@/components/PlanElicitationScreen";
 import { PlayerSetupScreen } from "@/components/PlayerSetupScreen";
 
 export default function Home() {
@@ -11,8 +10,7 @@ export default function Home() {
   const gameState = useGameStore((s) => s.gameState);
   const mission = useGameStore((s) => s.mission);
 
-  if (!player) return <PlayerSetupScreen />;
-  if (gameState === "plan_elicitation") return <PlanElicitationScreen />;
+  if (!player || gameState === "plan_elicitation") return <PlayerSetupScreen />;
   if (gameState === "mission_lobby") return <MissionLobbyScreen />;
   if (gameState === "complete") {
     return (

@@ -16,14 +16,10 @@ async function post<T>(path: string, body: unknown): Promise<T> {
 }
 
 export function startGame(playerSetup: PlayerSetup): Promise<TurnResponse> {
-  return post<TurnResponse>("/api/turn", { player_setup: playerSetup, action: "start", new_player_input: "" });
-}
-
-export function submitPlan(sessionId: string, planText: string): Promise<TurnResponse> {
   return post<TurnResponse>("/api/turn", {
-    session_id: sessionId,
+    player_setup: playerSetup,
     action: "submit_plan",
-    plan_text: planText,
+    plan_text: playerSetup.own_plan,
     new_player_input: "",
   });
 }

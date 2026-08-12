@@ -233,6 +233,23 @@ class MissionArchitectOutput(PermissiveModel):
     mission_chain: list[Mission] = Field(default_factory=list)
 
 
+class CharacterProjection(PermissiveModel):
+    """One character's projected starting stance once the player's plan is known."""
+    character_id: str
+    trust: int = 0
+    suspicion: int = 0
+    stress: int = 0
+    goal: str = ""
+    plan_objective: str = ""
+    plan: str = ""
+    plan_status: str = "ongoing"
+
+
+class CastProjectionOutput(PermissiveModel):
+    """R0-Cast output - how every canon character's stats/goal/plan shift for THIS player."""
+    characters: list[CharacterProjection] = Field(default_factory=list)
+
+
 # ---------------------------------------------------------------------------
 # Piece 5: Game Turn JSON (what the frontend consumes)
 # ---------------------------------------------------------------------------

@@ -24,12 +24,14 @@ from .audio_service import generate_voice
 from .db import create_session, get_session, last_turn_number, save_session_state, update_player_setup
 from .merge_turn import merge_turn
 from .prompt_builder import (
+    build_cast_prompt,
     build_r0_prompt,
     build_r1_prompt,
     build_r2_prompt,
     build_r3_prompt,
 )
 from .types import (
+    CastProjectionOutput,
     CharacterBrainOutput,
     GameTurn,
     GameTurnMission,
@@ -109,15 +111,22 @@ def load_skill_bible(skill_choice: str) -> SkillBible:
 def seed_character_states(world: WorldBible) -> dict:
     """Initialise live character state from the bible for a new session.
 
+    Stats always start at 0 (neutral). The Cast Projection agent (R0-Cast)
+    sets each character's stats/goal/plan once the player reveals their plan.
+
     No character is present until the player's plan is broken into missions;
     presence is derived from the active mission's cast each turn (STATE 3/4).
     """
     states = {}
     for char in world.autonomous_players:
+        stats = char.stats.model_dump(mode="json")
+        stats["trust_towards_player"] = 0
+        stats["suspicion_towards_player"] = 0
+        stats["stress"] = 0
         states[char.id] = {
             "id": char.id,
             "name": char.canon_name or char.id,
-            "stats": char.stats.model_dump(mode="json"),
+            "stats": stats,
             "memory": list(char.memory_about_player),
             "plan": char.starting_plan.model_dump(mode="json"),
             "knowledge": char.knowledge.model_dump(mode="json"),
@@ -259,7 +268,7 @@ def _run_turn(body: TurnRequest) -> TurnResponse:
                 raise HTTPException(400, "plan_text required for submit_plan")
             player.own_plan = plan
             update_player_setup(row.id, player.model_dump(mode="json"))
-            mission_state = _build_mission_chain(player, world, mission_state)
+            mission_state = _build_mission_chain(player, world, mission_state, character_states)
             save_session_state(row.id, mission_state, character_states, conversation)
             return _lobby_response(row.id, mission_state, player, world)
         return _plan_response(row.id, player, world)
@@ -268,7 +277,7 @@ def _run_turn(body: TurnRequest) -> TurnResponse:
     # STATE 2 recovery: plan exists but chain was never built.
     # ------------------------------------------------------------------
     if not mission_state.get("chain"):
-        mission_state = _build_mission_chain(player, world, mission_state)
+        mission_state = _build_mission_chain(player, world, mission_state, character_states)
         save_session_state(row.id, mission_state, character_states, conversation)
 
     current = mission_state.get("current")
@@ -306,9 +315,38 @@ def _sync_presence(character_states: dict, present_ids: list[str]) -> None:
         s["present"] = cid in present_ids
 
 
-def _build_mission_chain(player: PlayerSetup, world: WorldBible, mission_state: dict) -> dict:
-    """STATE 2 - run the Mission Architect (R0) ONCE per plan."""
-    r0_system, r0_user = build_r0_prompt(player, world)
+def _run_cast_projection(player: PlayerSetup, world: WorldBible, character_states: dict) -> None:
+    """R0-Cast: reset each character's stance from zero and let the LLM project
+    new stats, goal and plan from the player's plan + profile + canon."""
+    system, user = build_cast_prompt(player, world)
+    out = llm_caller.call_json(system, user, CastProjectionOutput, agent="caster")
+    for p in out.characters:
+        c = character_states.get(p.character_id)
+        if not c:
+            continue
+        stats = c["stats"]
+        stats["trust_towards_player"] = max(0, min(10, p.trust))
+        stats["suspicion_towards_player"] = max(0, min(10, p.suspicion))
+        stats["stress"] = max(0, min(10, p.stress))
+        if p.goal:
+            c["goal"] = p.goal
+        if p.plan_objective or p.plan:
+            c["plan"] = {
+                "objective": p.plan_objective or c["plan"].get("objective", ""),
+                "plan": p.plan or c["plan"].get("plan", ""),
+                "status": p.plan_status or "ongoing",
+            }
+
+
+def _build_mission_chain(
+    player: PlayerSetup,
+    world: WorldBible,
+    mission_state: dict,
+    character_states: dict,
+) -> dict:
+    """STATE 2 - project the cast (R0-Cast), then run the Mission Architect (R0)."""
+    _run_cast_projection(player, world, character_states)
+    r0_system, r0_user = build_r0_prompt(player, world, character_states)
     r0 = llm_caller.call_json(
         r0_system, r0_user, MissionArchitectOutput, agent="mission_architect"
     )

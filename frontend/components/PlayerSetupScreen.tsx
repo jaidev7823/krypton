@@ -44,6 +44,12 @@ const FIELDS: {
     defaultValue: "Watching a news where L figure out that kira lives in Kantō region of Japan",
     textarea: true,
   },
+  {
+    key: "own_plan",
+    label: "Your plan",
+    defaultValue: "Get close to Matsuda first, earn L's attention, then expose Light",
+    textarea: true,
+  },
 ];
 
 export function PlayerSetupScreen() {
@@ -62,10 +68,10 @@ export function PlayerSetupScreen() {
       personality: String(data.get("personality") || "").trim(),
       background: String(data.get("background") || "").trim(),
       starting_position: String(data.get("starting_position") || "").trim(),
-      own_plan: "",
+      own_plan: String(data.get("own_plan") || "").trim(),
     };
 
-    if (!p.character_name || !p.goal) return;
+    if (!p.character_name || !p.goal || !p.own_plan) return;
     setupPlayer(p);
   };
 

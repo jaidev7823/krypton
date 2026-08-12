@@ -22,12 +22,57 @@ def _dump(obj: Any) -> str:
 
 
 # ---------------------------------------------------------------------------
+# R0-Cast: Character Projection (runs once per plan, before mission design)
+# ---------------------------------------------------------------------------
+
+def build_cast_prompt(
+    player: PlayerSetup,
+    world: WorldBible,
+) -> tuple[str, dict]:
+    system = (
+        "You are the Cast Projection Director for a living world negotiation game.\n"
+        "Your only job: predict how every canon character's stance changes the moment the player reveals their plan.\n"
+        "Rules:\n"
+        "- Stats default to 0 (neutral). Raise a stat ONLY where the player's plan plausibly provokes it: "
+        "trust if the plan serves the character's interests, suspicion if it threatens them, "
+        "stress if the plan is risky for them.\n"
+        "- Stats are 0-10 (0 = none, 10 = maximum).\n"
+        "- Rewrite each character's goal and starting plan to reflect how they would engage THIS player given their "
+        "personality, background and stated plan - grounded in canon.\n"
+        "- Keep the character's canon identity and voice. Never invent new characters.\n"
+        "- Output ONLY JSON matching the schema exactly. No extra text, no markdown."
+    )
+    user = {
+        "task": "Project each character's initial stats, goal and plan for this player.",
+        "player": player.model_dump(mode="json"),
+        "player_own_plan": player.own_plan,
+        "world_lore": world.model_dump(mode="json"),
+        "output_schema": {
+            "characters": [
+                {
+                    "character_id": "bible character id",
+                    "trust": "int 0-10",
+                    "suspicion": "int 0-10",
+                    "stress": "int 0-10",
+                    "goal": "str - updated goal given the player's plan",
+                    "plan_objective": "str - what the character now wants from the player",
+                    "plan": "str - how the character will counter/engage the player",
+                    "plan_status": "'ongoing' | 'succeeded' | 'failed' | 'changed'",
+                }
+            ]
+        },
+    }
+    return system, user
+
+
+# ---------------------------------------------------------------------------
 # R0: Mission Architect (runs once per player plan)
 # ---------------------------------------------------------------------------
 
 def build_r0_prompt(
     player: PlayerSetup,
     world: WorldBible,
+    character_states: dict[str, Any] | None = None,
 ) -> tuple[str, dict]:
     system = (
         "You are the Mission Architect for a living world negotiation game.\n"
@@ -37,15 +82,26 @@ def build_r0_prompt(
         "- Each mission has a location, a clear objective with a stat goal, a reward, and the exact bible characters present.\n"
         "- 'characters' MUST only use ids from the world bible's autonomous_players. Never invent characters.\n"
         "- Missions escalate: earlier missions are low-stakes (a single character), later ones raise the stakes.\n"
+        "- Read current_character_states: those are the LIVE stats/goals/plans AFTER the player's plan was projected. "
+        "Mission objectives must reference the current values (e.g. 'Raise Matsuda trust from 2 to 7').\n"
         "- Do NOT write dialogue or narration. Missions are objectives, not story.\n"
         "- Output ONLY JSON matching the schema exactly. No extra text, no markdown."
     )
+    live = {}
+    if character_states:
+        for cid, s in character_states.items():
+            live[cid] = {
+                "goal": s.get("goal", ""),
+                "plan": s.get("plan", {}),
+                "stats": s.get("stats", {}),
+            }
     user = {
         "task": "Design a 4-5 mission chain that makes the player's plan playable.",
         "player": player.model_dump(mode="json"),
         "player_own_plan": player.own_plan,
         "world_lore": world.model_dump(mode="json"),
         "available_characters": [c.id for c in world.autonomous_players],
+        "current_character_states": live,
         "output_schema": {
             "mission_chain": [
                 {

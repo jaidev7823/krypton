@@ -1,7 +1,7 @@
 "use client";
 
 import { create } from "zustand";
-import { enterMission, getAudio, nextTurn, startGame, submitPlan } from "@/lib/api";
+import { enterMission, getAudio, nextTurn, startGame } from "@/lib/api";
 import type {
   ChatEntry,
   GameState,
@@ -31,7 +31,6 @@ interface GameStateStore {
   coachSkill: Skill | null;
 
   setupPlayer: (p: PlayerSetup) => Promise<void>;
-  submitPlayerPlan: (planText: string) => Promise<void>;
   startMission: () => Promise<void>;
   sendMessage: (text: string) => Promise<void>;
   selectCharacter: (id: string | null) => void;
@@ -108,20 +107,6 @@ export const useGameStore = create<GameStateStore>((set, get) => ({
     set({ isLoading: true, error: null, player: p });
     try {
       const res = await startGame(p);
-      applyTurn(set, res);
-    } catch (e) {
-      set({ error: e instanceof Error ? e.message : String(e) });
-    } finally {
-      set({ isLoading: false });
-    }
-  },
-
-  submitPlayerPlan: async (planText) => {
-    const { sessionId } = get();
-    if (!sessionId || !planText.trim() || get().isLoading) return;
-    set({ isLoading: true, error: null });
-    try {
-      const res = await submitPlan(sessionId, planText.trim());
       applyTurn(set, res);
     } catch (e) {
       set({ error: e instanceof Error ? e.message : String(e) });

@@ -30,8 +30,8 @@ SQLModel.metadata.create_all(db_module.engine)
 
 from app import llm_caller, main  # noqa: E402
 from app.types import (  # noqa: E402
-    CharacterBrainOutput, Mission, MissionArchitectOutput, NarratorOutput,
-    SkillFeedback, TurnRequest,
+    CastProjectionOutput, CharacterBrainOutput, CharacterProjection, Mission,
+    MissionArchitectOutput, NarratorOutput, SkillFeedback, TurnRequest,
 )
 
 CALLS: list[str] = []
@@ -39,6 +39,17 @@ LIVE_TURNS = {"count": 0}
 
 
 def _fake_model(agent):
+    if agent == "caster":
+        return CastProjectionOutput(characters=[
+            CharacterProjection(character_id="MATSUDA", trust=4, suspicion=1,
+                                stress=2, goal="Find a reliable witness",
+                                plan_objective="Get Jay's help",
+                                plan="Ask Jay friendly questions"),
+            CharacterProjection(character_id="L", trust=1, suspicion=5, stress=3,
+                                goal="Identify Kira",
+                                plan_objective="Watch Jay closely",
+                                plan="Observe without revealing himself"),
+        ])
     if agent == "mission_architect":
         return MissionArchitectOutput(mission_chain=[
             Mission(id=1, title="Matsuda Bridge", description="Get a referral",
@@ -103,19 +114,39 @@ def run_checks():
     check(r.world is not None and len(r.world.autonomous_players) == 5, "world bible for gallery")
     check(CALLS == [], f"NO LLM before a plan exists (calls={CALLS})")
 
-    # STATE 1 -> 2: submit a plan -> R0 runs ONCE, mission lobby
+    # Live character stats are seeded at 0 before any plan is projected
+    world = main.load_world_bible("Death Note")
+    seeded = main.seed_character_states(world)
+    check(all(seeded[cid]["stats"]["trust_towards_player"] == 0
+              and seeded[cid]["stats"]["suspicion_towards_player"] == 0
+              and seeded[cid]["stats"]["stress"] == 0
+              for cid in ("L", "LIGHT", "MATSUDA", "SOICHIRO", "RYUK")),
+          "stats default to 0 before the plan is projected")
+
+    # STATE 1 -> 2: submit a plan -> caster THEN R0 runs ONCE, mission lobby
     r = main._run_turn(TurnRequest(session_id=sid, action="submit_plan",
                                    plan_text="Get close to Matsuda, then earn L's attention"))
     check(r.game_state == "mission_lobby", "submit_plan -> mission_lobby")
-    check(CALLS == ["mission_architect"], f"only R0 ran once (calls={CALLS})")
+    check(CALLS == ["caster", "mission_architect"],
+          f"caster ran BEFORE mission_architect, once (calls={CALLS})")
     check(len(r.mission_chain) == 2, "mission chain of 2 built")
     check(r.turn.mission.title == "Matsuda Bridge" and r.turn.mission.status == "lobby",
           "current mission is M1 in lobby")
 
+    # Cast projection persisted: stats/goal/plan updated for projected chars
+    row = db_module.get_session(sid)
+    mat = row.character_states["MATSUDA"]
+    check(mat["stats"]["trust_towards_player"] == 4, "MATSUDA trust projected to 4")
+    check(mat["stats"]["suspicion_towards_player"] == 1, "MATSUDA suspicion projected to 1")
+    check(mat["goal"] == "Find a reliable witness", "MATSUDA goal rewritten by caster")
+    check(mat["plan"]["plan"].startswith("Ask Jay"), "MATSUDA plan rewritten by caster")
+    check(row.character_states["L"]["stats"]["suspicion_towards_player"] == 5,
+          "L suspicion projected to 5")
+
     # STATE 3 -> 4: enter mission -> no LLM, live
     r = main._run_turn(TurnRequest(session_id=sid, action="enter_mission", new_player_input=""))
     check(r.game_state == "live_mission", "enter_mission -> live_mission")
-    check(CALLS == ["mission_architect"], "enter_mission still no LLM")
+    check(CALLS == ["caster", "mission_architect"], "enter_mission still no LLM")
 
     # STATE 4: live turn -> R1+R2(cast only)+R3, presence synced
     r = main._run_turn(TurnRequest(session_id=sid, new_player_input="Hello Matsuda"))
