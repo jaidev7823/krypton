@@ -12,7 +12,7 @@ from __future__ import annotations
 
 from typing import Any, Literal, Optional
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 
 class PermissiveModel(BaseModel):
@@ -122,6 +122,14 @@ class SkillBible(PermissiveModel):
     skills: list[Skill] = Field(default_factory=list)
     scoring: dict[str, Any] = Field(default_factory=dict)
 
+    @model_validator(mode="before")
+    @classmethod
+    def _wrap_bare_list(cls, data):
+        """Tolerate a bare JSON array of skills (see never_split_bible.json)."""
+        if isinstance(data, list):
+            return {"book": "", "skills": data}
+        return data
+
 
 class PlayerSetup(PermissiveModel):
     world_choice: str = ""
@@ -213,8 +221,16 @@ class Mission(PermissiveModel):
     title: str = ""
     description: str = ""
     why_important: str = ""
-    status: str = "ongoing"
+    status: str = "lobby"
     location: str = ""
+    characters: list[str] = Field(default_factory=list)
+    objective: str = ""
+    reward: str = ""
+
+
+class MissionArchitectOutput(PermissiveModel):
+    """R0 output - the fixed mission chain derived from the player's own plan."""
+    mission_chain: list[Mission] = Field(default_factory=list)
 
 
 # ---------------------------------------------------------------------------
@@ -253,6 +269,10 @@ class GameTurnMission(PermissiveModel):
     why_important: str = ""
     status: str = "ongoing"
     chain_progress: str = ""
+    location: str = ""
+    characters: list[str] = Field(default_factory=list)
+    objective: str = ""
+    reward: str = ""
 
 
 class GameTurn(PermissiveModel):
@@ -268,9 +288,14 @@ class GameTurn(PermissiveModel):
 class TurnRequest(PermissiveModel):
     session_id: Optional[str] = None
     player_setup: Optional[PlayerSetup] = None
-    new_player_input: str
+    new_player_input: str = ""
+    action: str = ""  # "start" | "submit_plan" | "enter_mission" | "turn"
+    plan_text: str = ""
 
 
 class TurnResponse(PermissiveModel):
     session_id: str
     turn: GameTurn
+    game_state: str = ""  # plan_elicitation | mission_lobby | live_mission | complete
+    mission_chain: list[Mission] = Field(default_factory=list)
+    world: Optional[WorldBible] = None

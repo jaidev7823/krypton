@@ -7,51 +7,54 @@ import type { PlayerSetup } from "@/lib/types";
 const FIELDS: {
   key: keyof PlayerSetup;
   label: string;
-  placeholder: string;
+  defaultValue: string;
   textarea?: boolean;
 }[] = [
   {
     key: "world_choice",
     label: "World",
-    placeholder: "Death Note",
+    defaultValue: "Death Note",
   },
   {
     key: "character_name",
     label: "Your name",
-    placeholder: "Jay",
+    defaultValue: "Jay",
   },
   {
     key: "goal",
     label: "Your goal",
-    placeholder: "Prove Light is Kira without dying",
+    defaultValue: "Prove Light is Kira without dying",
     textarea: true,
   },
   {
     key: "personality",
     label: "Personality",
-    placeholder: "Paranoid, observant, uses humor to deflect",
+    defaultValue: "Paranoid, observant, uses humor to deflect",
     textarea: true,
   },
   {
     key: "background",
     label: "Background",
-    placeholder: "Transfer student, ex-detective assistant, father killed by Kira",
+    defaultValue: "Transfer student, ex-detective assistant, father killed by Kira",
     textarea: true,
   },
   {
     key: "starting_position",
     label: "Starting position",
-    placeholder: "In class next to Light, L is watching",
+    defaultValue: "Watching a news where L figure out that kira lives in Kantō region of Japan",
     textarea: true,
   },
 ];
 
 export function PlayerSetupScreen() {
   const setupPlayer = useGameStore((s) => s.setupPlayer);
+  const isLoading = useGameStore((s) => s.isLoading);
+  const error = useGameStore((s) => s.error);
 
   const submit = (e: React.FormEvent<HTMLFormElement>) => {
     e.preventDefault();
     const data = new FormData(e.currentTarget);
+
     const p: PlayerSetup = {
       world_choice: String(data.get("world_choice") || "Death Note").trim(),
       character_name: String(data.get("character_name") || "").trim(),
@@ -61,6 +64,7 @@ export function PlayerSetupScreen() {
       starting_position: String(data.get("starting_position") || "").trim(),
       own_plan: "",
     };
+
     if (!p.character_name || !p.goal) return;
     setupPlayer(p);
   };
@@ -87,14 +91,16 @@ export function PlayerSetupScreen() {
               {f.textarea ? (
                 <textarea
                   name={f.key}
-                  placeholder={f.placeholder}
+                  defaultValue={f.defaultValue}
+                  placeholder={f.defaultValue}
                   rows={2}
                   className="mt-1 w-full rounded-lg border border-edge bg-surface-2 px-3 py-2 text-sm text-ink placeholder:text-muted/50 outline-none focus:border-accent"
                 />
               ) : (
                 <input
                   name={f.key}
-                  placeholder={f.placeholder}
+                  defaultValue={f.defaultValue}
+                  placeholder={f.defaultValue}
                   className="mt-1 w-full rounded-lg border border-edge bg-surface-2 px-3 py-2 text-sm text-ink placeholder:text-muted/50 outline-none focus:border-accent"
                 />
               )}
@@ -102,11 +108,14 @@ export function PlayerSetupScreen() {
           ))}
         </div>
 
+        {error && <p className="mt-3 text-xs text-suspicion">{error}</p>}
+
         <button
           type="submit"
-          className="mt-6 w-full rounded-lg bg-accent px-4 py-2.5 text-sm font-semibold text-white transition hover:bg-accent/90"
+          disabled={isLoading}
+          className="mt-6 w-full rounded-lg bg-accent px-4 py-2.5 text-sm font-semibold text-white transition hover:bg-accent/90 disabled:opacity-50"
         >
-          Enter the world
+          {isLoading ? "Entering the world…" : "Enter the world"}
         </button>
       </motion.form>
     </div>

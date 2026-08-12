@@ -13,7 +13,7 @@ export function StatBar({
   delta?: number;
   good: boolean;
 }) {
-  const clamped = Math.max(0, Math.min(100, value));
+  const clamped = Math.max(0, Math.min(10, value));
 
   return (
     <div>

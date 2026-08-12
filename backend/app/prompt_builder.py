@@ -22,6 +22,49 @@ def _dump(obj: Any) -> str:
 
 
 # ---------------------------------------------------------------------------
+# R0: Mission Architect (runs once per player plan)
+# ---------------------------------------------------------------------------
+
+def build_r0_prompt(
+    player: PlayerSetup,
+    world: WorldBible,
+) -> tuple[str, dict]:
+    system = (
+        "You are the Mission Architect for a living world negotiation game.\n"
+        "Your only job is to turn the PLAYER'S OWN plan into a concrete mission chain.\n"
+        "Rules:\n"
+        "- Break the player's own_plan into 4-5 winnable missions that lead to their goal.\n"
+        "- Each mission has a location, a clear objective with a stat goal, a reward, and the exact bible characters present.\n"
+        "- 'characters' MUST only use ids from the world bible's autonomous_players. Never invent characters.\n"
+        "- Missions escalate: earlier missions are low-stakes (a single character), later ones raise the stakes.\n"
+        "- Do NOT write dialogue or narration. Missions are objectives, not story.\n"
+        "- Output ONLY JSON matching the schema exactly. No extra text, no markdown."
+    )
+    user = {
+        "task": "Design a 4-5 mission chain that makes the player's plan playable.",
+        "player": player.model_dump(mode="json"),
+        "player_own_plan": player.own_plan,
+        "world_lore": world.model_dump(mode="json"),
+        "available_characters": [c.id for c in world.autonomous_players],
+        "output_schema": {
+            "mission_chain": [
+                {
+                    "id": "int - 1-based sequence number",
+                    "title": "str - short mission name",
+                    "description": "str - what must happen in-world",
+                    "why_important": "str - how it serves the player's goal",
+                    "location": "str - in-world place",
+                    "characters": ["bible character ids present in this mission"],
+                    "objective": "str - measurable goal e.g. 'Raise Matsuda trust from 2 to 7'",
+                    "reward": "str - what the player gains on success",
+                }
+            ]
+        },
+    }
+    return system, user
+
+
+# ---------------------------------------------------------------------------
 # R1: Listener / Teacher
 # ---------------------------------------------------------------------------
 
@@ -81,6 +124,7 @@ def build_r2_prompt(
         "- You have a private plan and objective. Think using your planning_framework.\n"
         "- You received an analysis of the player's skill usage. React as YOURSELF, not as a fixed rule.\n"
         "- If the player used a skill well, react positively and update your stats. Decide deltas based on YOUR personality.\n"
+        "- Stats live on a 0-10 scale (0 = none, 10 = max). Deltas are small integers, typically -2..+2.\n"
         "- Set a challenge_for_player: the next skill from the skill bible the player must use to beat your dialogue.\n"
         "- inner_thought is private and never spoken - it reflects how your planning_framework interprets this exchange.\n"
         "- Never break character. Never mention you are AI.\n"
@@ -130,19 +174,18 @@ def build_r3_prompt(
     conversation: list[dict[str, str]],
 ) -> tuple[str, dict]:
     system = (
-        "You are the Narrator and Mission Manager for a living world simulation.\n"
+        "You are the Narrator for a living world simulation.\n"
         "Rules:\n"
         "- You are NOT a character. You describe the environment like a narrator.\n"
         "- Explain where the player is, why they are here, and context they don't have.\n"
-        "- You manage the mission chain. Decide if the current mission is won/lost based on the skill evaluation and the characters' stat changes.\n"
-        "- If won, create the next mission that logically connects to the player's goal.\n"
-        "- Track chain progress and why the chain matters for the player's goal.\n"
-        "- Handle characters_entered / characters_left if the story needs it.\n"
-        "- If there is no current mission (first turn), establish the scene and create mission 1.\n"
+        "- You decide if the CURRENT mission is won or lost, based on the skill evaluation and the characters' stat changes.\n"
+        "- You do NOT create missions or invent new story arcs. The mission chain is already fixed; your only verdict is current_mission_won.\n"
+        "- Report chain_progress exactly as given in mission_context.\n"
+        "- The current scene and its characters are defined by the active mission. Do not add characters who are not in the mission.\n"
         "- Output ONLY JSON matching the schema exactly."
     )
     user = {
-        "task": "Narrate this turn and manage the mission chain.",
+        "task": "Narrate this turn and judge whether the current mission is won or lost.",
         "world_lore": world.model_dump(mode="json"),
         "player": player.model_dump(mode="json"),
         "mission_context": mission_context,
@@ -154,9 +197,7 @@ def build_r3_prompt(
             "where": "str - location",
             "why_here": "str - why the player is here",
             "mission_status": {
-                "current_mission_won": "bool (false if no mission yet)",
-                "need_new_mission": "bool",
-                "next_mission": "null or {title, why_important, description}",
+                "current_mission_won": "bool - true only if the mission's objective is met",
                 "chain_progress": "str like '1/5'"
             },
             "scene_update": {

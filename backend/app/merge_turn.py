@@ -38,19 +38,23 @@ def merge_turn(
     player_name: str,
     characters_state: list[dict[str, Any]],
     mission_state: Optional[dict[str, Any]],
+    chain_progress: str = "",
 ) -> GameTurn:
     """Build the final GameTurn from the three raw outputs and persisted state."""
 
     # Narrator + mission
     ms = r3_output.mission_status
-    next_mission = ms.next_mission
     mission = GameTurnMission(
         id=mission_state.get("id", 0) if mission_state else 0,
         title=mission_state.get("title", "") if mission_state else "",
         description=mission_state.get("description", "") if mission_state else "",
         why_important=mission_state.get("why_important", "") if mission_state else "",
-        status="won" if ms.current_mission_won else "ongoing",
-        chain_progress=ms.chain_progress,
+        status=mission_state.get("status", "ongoing") if mission_state else "ongoing",
+        chain_progress=chain_progress or ms.chain_progress,
+        location=mission_state.get("location", "") if mission_state else "",
+        characters=mission_state.get("characters", []) if mission_state else [],
+        objective=mission_state.get("objective", "") if mission_state else "",
+        reward=mission_state.get("reward", "") if mission_state else "",
     )
 
     # Character summaries (with live stats + deltas + memory + challenge)

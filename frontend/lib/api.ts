@@ -15,8 +15,25 @@ async function post<T>(path: string, body: unknown): Promise<T> {
   return res.json() as Promise<T>;
 }
 
-export function startTurn(playerSetup: PlayerSetup, input: string): Promise<TurnResponse> {
-  return post<TurnResponse>("/api/turn", { player_setup: playerSetup, new_player_input: input });
+export function startGame(playerSetup: PlayerSetup): Promise<TurnResponse> {
+  return post<TurnResponse>("/api/turn", { player_setup: playerSetup, action: "start", new_player_input: "" });
+}
+
+export function submitPlan(sessionId: string, planText: string): Promise<TurnResponse> {
+  return post<TurnResponse>("/api/turn", {
+    session_id: sessionId,
+    action: "submit_plan",
+    plan_text: planText,
+    new_player_input: "",
+  });
+}
+
+export function enterMission(sessionId: string): Promise<TurnResponse> {
+  return post<TurnResponse>("/api/turn", {
+    session_id: sessionId,
+    action: "enter_mission",
+    new_player_input: "",
+  });
 }
 
 export function nextTurn(sessionId: string, input: string): Promise<TurnResponse> {

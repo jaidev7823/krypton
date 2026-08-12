@@ -117,6 +117,17 @@ def save_session_state(session_id: str, mission_state: dict, character_states: d
         db.commit()
 
 
+def update_player_setup(session_id: str, player_setup: dict) -> None:
+    with DBSession(engine) as db:
+        row = db.get(SessionRow, session_id)
+        if row is None:
+            return
+        row.player_setup = player_setup
+        row.updated_at = _now()
+        db.add(row)
+        db.commit()
+
+
 def log_turn(
     session_id: str,
     turn_number: int,

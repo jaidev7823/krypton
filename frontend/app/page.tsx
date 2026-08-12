@@ -2,10 +2,33 @@
 
 import { useGameStore } from "@/store/useGameStore";
 import { GamePage } from "@/components/GamePage";
+import { MissionLobbyScreen } from "@/components/MissionLobbyScreen";
+import { PlanElicitationScreen } from "@/components/PlanElicitationScreen";
 import { PlayerSetupScreen } from "@/components/PlayerSetupScreen";
 
 export default function Home() {
   const player = useGameStore((s) => s.player);
+  const gameState = useGameStore((s) => s.gameState);
+  const mission = useGameStore((s) => s.mission);
 
-  return player ? <GamePage /> : <PlayerSetupScreen />;
+  if (!player) return <PlayerSetupScreen />;
+  if (gameState === "plan_elicitation") return <PlanElicitationScreen />;
+  if (gameState === "mission_lobby") return <MissionLobbyScreen />;
+  if (gameState === "complete") {
+    return (
+      <div className="flex min-h-screen items-center justify-center bg-bg p-4">
+        <div className="w-full max-w-lg rounded-2xl border border-edge bg-surface p-8 text-center">
+          <h1 className="text-2xl font-bold tracking-tight text-ink">
+            Your plan is complete
+          </h1>
+          <p className="mt-3 text-sm text-muted">
+            {mission?.title
+              ? `The world changed with you. Chain progress: ${mission.chain_progress}.`
+              : "Every mission has been fulfilled. The world remembers what you did."}
+          </p>
+        </div>
+      </div>
+    );
+  }
+  return <GamePage />;
 }

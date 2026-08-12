@@ -44,6 +44,10 @@ export interface GameTurnMission {
   why_important: string;
   status: string;
   chain_progress: string;
+  location: string;
+  characters: string[];
+  objective: string;
+  reward: string;
 }
 
 export interface GameTurnNarration {
@@ -82,9 +86,49 @@ export interface PlayerSetup {
   own_plan: string;
 }
 
+export interface Mission {
+  id: number;
+  title: string;
+  description: string;
+  why_important: string;
+  status: string;
+  location: string;
+  characters: string[];
+  objective: string;
+  reward: string;
+}
+
+export interface CharacterStats {
+  suspicion_towards_player: number;
+  trust_towards_player: number;
+  stress: number;
+}
+
+export interface BibleCharacter {
+  id: string;
+  canon_name: string;
+  role: string;
+  goal: string;
+  stats: CharacterStats;
+}
+
+export interface WorldBible {
+  world: { name: string; starting_location: string; atmosphere: string };
+  autonomous_players: BibleCharacter[];
+}
+
+export type GameState =
+  | "plan_elicitation"
+  | "mission_lobby"
+  | "live_mission"
+  | "complete";
+
 export interface TurnResponse {
   session_id: string;
   turn: GameTurn;
+  game_state: GameState;
+  mission_chain: Mission[];
+  world?: WorldBible | null;
 }
 
 export interface AudioResponse {

@@ -21,15 +21,21 @@ from pydantic import BaseModel
 
 from . import db, llm_caller
 from .audio_service import generate_voice
-from .db import create_session, get_session, last_turn_number, save_session_state
+from .db import create_session, get_session, last_turn_number, save_session_state, update_player_setup
 from .merge_turn import merge_turn
 from .prompt_builder import (
+    build_r0_prompt,
     build_r1_prompt,
     build_r2_prompt,
     build_r3_prompt,
 )
 from .types import (
     CharacterBrainOutput,
+    GameTurn,
+    GameTurnMission,
+    GameTurnNarration,
+    Mission,
+    MissionArchitectOutput,
     NarratorOutput,
     PlayerSetup,
     SkillBible,
@@ -101,7 +107,11 @@ def load_skill_bible(skill_choice: str) -> SkillBible:
 # ---------------------------------------------------------------------------
 
 def seed_character_states(world: WorldBible) -> dict:
-    """Initialise live character state from the bible for a new session."""
+    """Initialise live character state from the bible for a new session.
+
+    No character is present until the player's plan is broken into missions;
+    presence is derived from the active mission's cast each turn (STATE 3/4).
+    """
     states = {}
     for char in world.autonomous_players:
         states[char.id] = {
@@ -115,7 +125,7 @@ def seed_character_states(world: WorldBible) -> dict:
             "dialogue_style": char.dialogue_style.model_dump(mode="json"),
             "planning_framework": char.planning_framework.model_dump(mode="json"),
             "sample_audio_path": char.stats.sample_audio_path,
-            "present": char.id in ("L", "LIGHT"),  # Ryuk is an invisible observer
+            "present": False,
         }
     return states
 
@@ -126,10 +136,6 @@ def mission_context(mission_state: dict, scene: dict) -> dict:
         "old_missions_summary": mission_state.get("history", []),
         "scene": scene,
     }
-
-
-def characters_present(character_states: dict) -> list[str]:
-    return [cid for cid, s in character_states.items() if s.get("present", True)]
 
 
 STAT_KEY_MAP = {
@@ -163,7 +169,7 @@ def apply_r2(state: dict, out: CharacterBrainOutput, skill_bible: SkillBible) ->
     for short, canonical in STAT_KEY_MAP.items():
         ch = getattr(out.stat_changes, short, None)
         if ch is not None and ch.delta:
-            stats[canonical] = max(0, min(100, stats.get(canonical, 0) + ch.delta))
+            stats[canonical] = max(0, min(10, stats.get(canonical, 0) + ch.delta))
     if out.did_change_plan and out.new_plan:
         char["plan"] = {**out.new_plan, "status": out.plan_status}
     else:
@@ -176,39 +182,36 @@ def apply_r2(state: dict, out: CharacterBrainOutput, skill_bible: SkillBible) ->
         )
 
 
-def apply_scene_update(character_states: dict, entered: list, left: list, next_present: list) -> None:
-    for cid in entered:
-        if cid in character_states:
-            character_states[cid]["present"] = True
-    for cid in left:
-        if cid in character_states:
-            character_states[cid]["present"] = False
-    if next_present:
-        for cid, s in character_states.items():
-            s["present"] = cid in next_present
+def chain_progress(mission_state: dict) -> str:
+    chain = mission_state.get("chain") or []
+    return f"{len(mission_state.get('history') or [])}/{len(chain)}"
 
 
-def apply_mission_state(mission_state: dict, r3: NarratorOutput) -> None:
+def apply_mission_state(mission_state: dict, r3: NarratorOutput) -> bool:
+    """Advance the fixed mission chain when R3 rules the current mission won.
+
+    Never creates missions - the chain was built by R0 from the player's plan.
+    Returns True if the current mission was won (game_state should move on).
+    """
     ms = r3.mission_status
     current = mission_state.get("current")
-    if current:
-        current["status"] = "won" if ms.current_mission_won else current.get("status", "ongoing")
-        if ms.current_mission_won:
-            mission_state.setdefault("history", []).append(
-                f"M{current.get('id', '?')} {current.get('title', '')} - won"
-            )
-    if ms.need_new_mission and ms.next_mission:
-        nxt = ms.next_mission
-        mission_state["current"] = {
-            "id": (current or {}).get("id", 0) + 1,
-            "title": nxt.title,
-            "description": getattr(nxt, "description", "") or "",
-            "why_important": nxt.why_important,
-            "status": "ongoing",
-        }
-    elif current is None:
-        # first turn, no mission yet - leave current as None, R3 created the scene
-        pass
+    if not current:
+        return False
+    if not ms.current_mission_won:
+        return False
+    current["status"] = "won"
+    mission_state.setdefault("history", []).append(
+        f"M{current.get('id', '?')} {current.get('title', '')} - won"
+    )
+    chain = mission_state.get("chain") or []
+    idx = next((i for i, m in enumerate(chain) if m.get("id") == current.get("id")), -1)
+    nxt = chain[idx + 1] if idx >= 0 and idx + 1 < len(chain) else None
+    if nxt:
+        nxt["status"] = "lobby"
+        mission_state["current"] = nxt
+    else:
+        mission_state["current"] = None
+    return True
 
 
 # ---------------------------------------------------------------------------
@@ -240,10 +243,158 @@ def _run_turn(body: TurnRequest) -> TurnResponse:
     if not row.character_states:
         row.character_states = seed_character_states(world)
     character_states = row.character_states
-    mission_state = row.mission_state or {"current": None, "history": []}
+    mission_state = row.mission_state or {"chain": [], "current": None, "history": []}
     conversation = row.conversation
 
+    action = body.action or "turn"
+    own_plan = (player.own_plan or "").strip()
+
+    # ------------------------------------------------------------------
+    # STATE 1: no plan yet -> elicit it. NO LLM.
+    # ------------------------------------------------------------------
+    if not own_plan:
+        if action == "submit_plan":
+            plan = (body.plan_text or "").strip()
+            if not plan:
+                raise HTTPException(400, "plan_text required for submit_plan")
+            player.own_plan = plan
+            update_player_setup(row.id, player.model_dump(mode="json"))
+            mission_state = _build_mission_chain(player, world, mission_state)
+            save_session_state(row.id, mission_state, character_states, conversation)
+            return _lobby_response(row.id, mission_state, player, world)
+        return _plan_response(row.id, player, world)
+
+    # ------------------------------------------------------------------
+    # STATE 2 recovery: plan exists but chain was never built.
+    # ------------------------------------------------------------------
+    if not mission_state.get("chain"):
+        mission_state = _build_mission_chain(player, world, mission_state)
+        save_session_state(row.id, mission_state, character_states, conversation)
+
+    current = mission_state.get("current")
+
+    # All missions done.
+    if current is None:
+        return _complete_response(row.id, mission_state, player)
+
+    # ------------------------------------------------------------------
+    # STATE 3: mission lobby. NO LLM until Enter Mission.
+    # ------------------------------------------------------------------
+    if current.get("status") == "lobby":
+        if action == "enter_mission":
+            current["status"] = "active"
+            save_session_state(row.id, mission_state, character_states, conversation)
+            return _live_response(row.id, mission_state, player)
+        return _lobby_response(row.id, mission_state, player, world)
+
+    # ------------------------------------------------------------------
+    # STATE 4: LIVE MISSION - R1 + R2 + R3, cast locked to the mission.
+    # ------------------------------------------------------------------
+    return _run_live_turn(
+        body, row, player, world, skill, mission_state, character_states, conversation, action
+    )
+
+
+def _mission_cast(current: dict, character_states: dict) -> list[str]:
+    """Characters allowed in the room this turn = the active mission's cast."""
+    cast = current.get("characters") or []
+    return [cid for cid in cast if cid in character_states]
+
+
+def _sync_presence(character_states: dict, present_ids: list[str]) -> None:
+    for cid, s in character_states.items():
+        s["present"] = cid in present_ids
+
+
+def _build_mission_chain(player: PlayerSetup, world: WorldBible, mission_state: dict) -> dict:
+    """STATE 2 - run the Mission Architect (R0) ONCE per plan."""
+    r0_system, r0_user = build_r0_prompt(player, world)
+    r0 = llm_caller.call_json(
+        r0_system, r0_user, MissionArchitectOutput, agent="mission_architect"
+    )
+    chain = [m.model_dump(mode="json") for m in r0.mission_chain]
+    if not chain:
+        raise HTTPException(500, "Mission Architect returned an empty mission chain")
+    chain[0]["status"] = "lobby"
+    mission_state["chain"] = chain
+    mission_state["current"] = chain[0]
+    mission_state["history"] = mission_state.get("history") or []
+    return mission_state
+
+
+def _mission_turn(turn_id: int, mission_state: dict, narration: str) -> GameTurn:
+    current = mission_state.get("current") or {}
+    return GameTurn(
+        turn_id=turn_id,
+        narration=GameTurnNarration(text=narration),
+        mission=GameTurnMission(
+            id=current.get("id", 0),
+            title=current.get("title", ""),
+            description=current.get("description", ""),
+            why_important=current.get("why_important", ""),
+            status=current.get("status", "lobby"),
+            chain_progress=chain_progress(mission_state),
+            location=current.get("location", ""),
+            characters=current.get("characters", []),
+            objective=current.get("objective", ""),
+            reward=current.get("reward", ""),
+        ),
+    )
+
+
+def _plan_response(session_id: str, player: PlayerSetup, world: WorldBible) -> TurnResponse:
+    turn = _mission_turn(0, {"chain": [], "current": None, "history": []},
+                         "Define your plan. The world will wait.")
+    return TurnResponse(session_id=session_id, turn=turn,
+                        game_state="plan_elicitation", mission_chain=[], world=world)
+
+
+def _lobby_response(session_id: str, mission_state: dict, player: PlayerSetup, world: WorldBible) -> TurnResponse:
+    current = mission_state.get("current") or {}
+    narration = (
+        f"Mission M{current.get('id', '?')}: {current.get('title', '')}. "
+        f"{current.get('objective', '')}"
+    )
+    turn = _mission_turn(0, mission_state, narration)
+    chain = mission_state.get("chain") or []
+    return TurnResponse(session_id=session_id, turn=turn, game_state="mission_lobby",
+                        mission_chain=[Mission.model_validate(m) for m in chain], world=world)
+
+
+def _live_response(session_id: str, mission_state: dict, player: PlayerSetup) -> TurnResponse:
+    current = mission_state.get("current") or {}
+    narration = (
+        f"You step into {current.get('location', 'the scene')} for "
+        f"'{current.get('title', '')}'. {current.get('objective', '')}"
+    )
+    turn = _mission_turn(0, mission_state, narration)
+    return TurnResponse(session_id=session_id, turn=turn, game_state="live_mission",
+                        mission_chain=mission_state.get("chain") or [])
+
+
+def _complete_response(session_id: str, mission_state: dict, player: PlayerSetup) -> TurnResponse:
+    turn = _mission_turn(
+        0, mission_state,
+        "All missions complete. Your plan is fulfilled - the world remembers what you did.",
+    )
+    return TurnResponse(session_id=session_id, turn=turn, game_state="complete",
+                        mission_chain=mission_state.get("chain") or [])
+
+
+def _run_live_turn(
+    body: TurnRequest,
+    row,
+    player: PlayerSetup,
+    world: WorldBible,
+    skill: SkillBible,
+    mission_state: dict,
+    character_states: dict,
+    conversation: list,
+    action: str,
+) -> TurnResponse:
+    """STATE 4 - the original R1 + R2 + R3 loop, run per active mission turn."""
     turn_number = last_turn_number(row.id) + 1
+    current = mission_state["current"]
 
     def log_agent_attempt(
         system: str,
@@ -275,9 +426,13 @@ def _run_turn(body: TurnRequest) -> TurnResponse:
             log_agent_attempt(**kwargs, agent=agent)
         return _cb
 
+    # The room contains ONLY the active mission's cast - never the full bible.
+    present_ids = _mission_cast(current, character_states)
+    _sync_presence(character_states, present_ids)
+
     scene = {
-        "location": (mission_state.get("current") or {}).get("location") or world.world.starting_location,
-        "characters_present": characters_present(character_states),
+        "location": current.get("location") or world.world.starting_location,
+        "characters_present": present_ids,
     }
     mctx = mission_context(mission_state, scene)
 
@@ -287,7 +442,7 @@ def _run_turn(body: TurnRequest) -> TurnResponse:
         r1_system, r1_user, SkillFeedback, agent="listener", on_attempt=on_attempt("listener")
     )
 
-    # R2 - Character Brain, one per character in scene (parallel)
+    # R2 - Character Brain, one per character in the mission cast (parallel)
     def _char_call(cid: str):
         char = character_states[cid]
         r2_system, r2_user = build_r2_prompt(
@@ -304,13 +459,12 @@ def _run_turn(body: TurnRequest) -> TurnResponse:
             agent=f"brain:{cid}", on_attempt=on_attempt(f"brain:{cid}"),
         )
 
-    present = characters_present(character_states)
     r2_outputs: list[CharacterBrainOutput] = []
-    if present:
-        with ThreadPoolExecutor(max_workers=min(len(present), 4)) as ex:
-            r2_outputs = list(ex.map(_char_call, present))
+    if present_ids:
+        with ThreadPoolExecutor(max_workers=min(len(present_ids), 4)) as ex:
+            r2_outputs = list(ex.map(_char_call, present_ids))
 
-    # R3 - Narrator / Mission Manager
+    # R3 - Narrator / Mission judge
     r3_system, r3_user = build_r3_prompt(
         world,
         player,
@@ -326,13 +480,10 @@ def _run_turn(body: TurnRequest) -> TurnResponse:
     # Apply state changes
     for out in r2_outputs:
         apply_r2(character_states, out, skill)
-    apply_scene_update(
-        character_states,
-        r3.scene_update.characters_entered,
-        r3.scene_update.characters_left,
-        r3.scene_update.new_characters_present_for_next_turn,
-    )
-    apply_mission_state(mission_state, r3)
+    # Presence is ALWAYS the mission cast - ignore R3's scene_update so the
+    # model can never drag in characters that are not part of the mission.
+    _sync_presence(character_states, present_ids)
+    won = apply_mission_state(mission_state, r3)
 
     for msg in [{"speaker": "PLAYER", "text": body.new_player_input}]:
         conversation.append(msg)
@@ -349,6 +500,7 @@ def _run_turn(body: TurnRequest) -> TurnResponse:
         player_name=player.character_name,
         characters_state=list(character_states.values()),
         mission_state=mission_state.get("current"),
+        chain_progress=chain_progress(mission_state),
     )
 
     save_session_state(row.id, mission_state, character_states, conversation)
@@ -364,7 +516,13 @@ def _run_turn(body: TurnRequest) -> TurnResponse:
         provider=llm_caller.available_provider(),
     )
 
-    return TurnResponse(session_id=row.id, turn=game_turn)
+    if won:
+        game_state = "complete" if mission_state.get("current") is None else "mission_lobby"
+    else:
+        game_state = "live_mission"
+
+    return TurnResponse(session_id=row.id, turn=game_turn, game_state=game_state,
+                        mission_chain=mission_state.get("chain") or [])
 
 
 @app.post("/api/turn", response_model=TurnResponse)
