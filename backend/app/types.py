@@ -24,14 +24,14 @@ class PermissiveModel(BaseModel):
 # Piece 1: World & Character bible
 # ---------------------------------------------------------------------------
 
-class DialogueStyle(PermissiveModel):
+class StructuredDialogueStyle(PermissiveModel):
     vocab: list[str] = Field(default_factory=list)
     speech_pattern: str = ""
     never_says: list[str] = Field(default_factory=list)
     emotional_range: str = ""
 
 
-class PlanningFramework(PermissiveModel):
+class StructuredPlanningFramework(PermissiveModel):
     type: str = ""
     how_he_plans: str = ""
     weakness: str = ""
@@ -43,7 +43,7 @@ class Knowledge(PermissiveModel):
     suspects: list[str] = Field(default_factory=list)
 
 
-class StartingPlan(PermissiveModel):
+class StructuredStartingPlan(PermissiveModel):
     objective: str = ""
     plan: str = ""
     status: str = "ongoing"
@@ -62,12 +62,12 @@ class AutonomousPlayer(PermissiveModel):
     type: str = "autonomous_player"
     canon_name: str = ""
     role: str = ""
-    dialogue_style: DialogueStyle = Field(default_factory=DialogueStyle)
-    planning_framework: PlanningFramework = Field(default_factory=PlanningFramework)
+    dialogue_style: str | StructuredDialogueStyle = ""
+    planning_framework: str | StructuredPlanningFramework = ""
     knowledge: Knowledge = Field(default_factory=Knowledge)
     goal: str = ""
     motivation: str = ""
-    starting_plan: StartingPlan = Field(default_factory=StartingPlan)
+    starting_plan: str | StructuredStartingPlan = ""
     memory_about_player: list[str] = Field(default_factory=list)
     stats: CharacterStats = Field(default_factory=CharacterStats)
 

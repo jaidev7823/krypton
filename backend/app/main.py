@@ -12,6 +12,7 @@ import json
 import logging
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
+from typing import Any
 
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
@@ -123,20 +124,29 @@ def seed_character_states(world: WorldBible) -> dict:
         stats["trust_towards_player"] = 0
         stats["suspicion_towards_player"] = 0
         stats["stress"] = 0
+        starting_plan = char.starting_plan
+        if isinstance(starting_plan, str):
+            plan = {"objective": starting_plan, "plan": starting_plan, "status": "ongoing"}
+        else:
+            plan = starting_plan.model_dump(mode="json")
         states[char.id] = {
             "id": char.id,
             "name": char.canon_name or char.id,
             "stats": stats,
             "memory": list(char.memory_about_player),
-            "plan": char.starting_plan.model_dump(mode="json"),
+            "plan": plan,
             "knowledge": char.knowledge.model_dump(mode="json"),
             "goal": char.goal,
-            "dialogue_style": char.dialogue_style.model_dump(mode="json"),
-            "planning_framework": char.planning_framework.model_dump(mode="json"),
+            "dialogue_style": _dump_or_plain(char.dialogue_style),
+            "planning_framework": _dump_or_plain(char.planning_framework),
             "sample_audio_path": char.stats.sample_audio_path,
             "present": False,
         }
     return states
+
+
+def _dump_or_plain(value) -> Any:
+    return value.model_dump(mode="json") if hasattr(value, "model_dump") else value
 
 
 def mission_context(mission_state: dict, scene: dict) -> dict:
@@ -223,6 +233,45 @@ def apply_mission_state(mission_state: dict, r3: NarratorOutput) -> bool:
     return True
 
 
+def _make_agent_logger(session_id: str, turn_number: int):
+    """Build the on_attempt factory that audits every LLM call to agent_calls.
+
+    Shared by ALL agents (caster, mission_architect, listener, brain, narrator)
+    so every LLM round-trip is logged - not just the per-turn calls.
+    """
+    def log_agent_attempt(
+        system: str,
+        user_payload: dict,
+        raw_response: str,
+        parsed,
+        success: bool,
+        error: str,
+        attempt: int,
+        agent: str,
+    ) -> None:
+        db.log_agent_call(
+            session_id=session_id,
+            turn_number=turn_number,
+            agent=agent,
+            attempt=attempt,
+            provider=llm_caller.available_provider(),
+            model=llm_caller._current_model(),
+            system_prompt=system,
+            user_payload=user_payload,
+            raw_response=raw_response,
+            parsed_output=parsed,
+            success=success,
+            error=error,
+        )
+
+    def on_attempt(agent: str):
+        def _cb(**kwargs):
+            log_agent_attempt(**kwargs, agent=agent)
+        return _cb
+
+    return on_attempt
+
+
 # ---------------------------------------------------------------------------
 # Turn endpoint
 # ---------------------------------------------------------------------------
@@ -258,6 +307,10 @@ def _run_turn(body: TurnRequest) -> TurnResponse:
     action = body.action or "turn"
     own_plan = (player.own_plan or "").strip()
 
+    # Every LLM call is audited - plan-time agents log under turn 0 since no
+    # mission turn has happened yet.
+    on_attempt = _make_agent_logger(row.id, 0)
+
     # ------------------------------------------------------------------
     # STATE 1: no plan yet -> elicit it. NO LLM.
     # ------------------------------------------------------------------
@@ -268,7 +321,7 @@ def _run_turn(body: TurnRequest) -> TurnResponse:
                 raise HTTPException(400, "plan_text required for submit_plan")
             player.own_plan = plan
             update_player_setup(row.id, player.model_dump(mode="json"))
-            mission_state = _build_mission_chain(player, world, mission_state, character_states)
+            mission_state = _build_mission_chain(player, world, mission_state, character_states, on_attempt=on_attempt)
             save_session_state(row.id, mission_state, character_states, conversation)
             return _lobby_response(row.id, mission_state, player, world)
         return _plan_response(row.id, player, world)
@@ -277,7 +330,7 @@ def _run_turn(body: TurnRequest) -> TurnResponse:
     # STATE 2 recovery: plan exists but chain was never built.
     # ------------------------------------------------------------------
     if not mission_state.get("chain"):
-        mission_state = _build_mission_chain(player, world, mission_state, character_states)
+        mission_state = _build_mission_chain(player, world, mission_state, character_states, on_attempt=on_attempt)
         save_session_state(row.id, mission_state, character_states, conversation)
 
     current = mission_state.get("current")
@@ -315,11 +368,19 @@ def _sync_presence(character_states: dict, present_ids: list[str]) -> None:
         s["present"] = cid in present_ids
 
 
-def _run_cast_projection(player: PlayerSetup, world: WorldBible, character_states: dict) -> None:
+def _run_cast_projection(
+    player: PlayerSetup,
+    world: WorldBible,
+    character_states: dict,
+    on_attempt=None,
+) -> None:
     """R0-Cast: reset each character's stance from zero and let the LLM project
     new stats, goal and plan from the player's plan + profile + canon."""
     system, user = build_cast_prompt(player, world)
-    out = llm_caller.call_json(system, user, CastProjectionOutput, agent="caster")
+    out = llm_caller.call_json(
+        system, user, CastProjectionOutput,
+        agent="caster", on_attempt=on_attempt("caster") if on_attempt else None,
+    )
     for p in out.characters:
         c = character_states.get(p.character_id)
         if not c:
@@ -343,12 +404,15 @@ def _build_mission_chain(
     world: WorldBible,
     mission_state: dict,
     character_states: dict,
+    on_attempt=None,
 ) -> dict:
     """STATE 2 - project the cast (R0-Cast), then run the Mission Architect (R0)."""
-    _run_cast_projection(player, world, character_states)
+    _run_cast_projection(player, world, character_states, on_attempt=on_attempt)
     r0_system, r0_user = build_r0_prompt(player, world, character_states)
     r0 = llm_caller.call_json(
-        r0_system, r0_user, MissionArchitectOutput, agent="mission_architect"
+        r0_system, r0_user, MissionArchitectOutput,
+        agent="mission_architect",
+        on_attempt=on_attempt("mission_architect") if on_attempt else None,
     )
     chain = [m.model_dump(mode="json") for m in r0.mission_chain]
     if not chain:
@@ -434,35 +498,7 @@ def _run_live_turn(
     turn_number = last_turn_number(row.id) + 1
     current = mission_state["current"]
 
-    def log_agent_attempt(
-        system: str,
-        user_payload: dict,
-        raw_response: str,
-        parsed,
-        success: bool,
-        error: str,
-        attempt: int,
-        agent: str,
-    ) -> None:
-        db.log_agent_call(
-            session_id=row.id,
-            turn_number=turn_number,
-            agent=agent,
-            attempt=attempt,
-            provider=llm_caller.available_provider(),
-            model=llm_caller._current_model(),
-            system_prompt=system,
-            user_payload=user_payload,
-            raw_response=raw_response,
-            parsed_output=parsed,
-            success=success,
-            error=error,
-        )
-
-    def on_attempt(agent: str):
-        def _cb(**kwargs):
-            log_agent_attempt(**kwargs, agent=agent)
-        return _cb
+    on_attempt = _make_agent_logger(row.id, turn_number)
 
     # The room contains ONLY the active mission's cast - never the full bible.
     present_ids = _mission_cast(current, character_states)

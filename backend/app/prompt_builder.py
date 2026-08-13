@@ -31,19 +31,20 @@ def build_cast_prompt(
 ) -> tuple[str, dict]:
     system = (
         "You are the Cast Projection Director for a living world negotiation game.\n"
-        "Your only job: predict how every canon character's stance changes the moment the player reveals their plan.\n"
+        "Your only job: predict how every canon character's plan will be for this world based on canon.\n"
+        "Other charachter do not know what player planned so do not make charachter plans based on player's plan.\n"
         "Rules:\n"
-        "- Stats default to 0 (neutral). Raise a stat ONLY where the player's plan plausibly provokes it: "
+        "- Stats default to 0 (neutral). Raise a stat ONLY where the player's personality plausibly provokes it if there is chance charachter knows him: "
         "trust if the plan serves the character's interests, suspicion if it threatens them, "
         "stress if the plan is risky for them.\n"
         "- Stats are 0-10 (0 = none, 10 = maximum).\n"
         "- Rewrite each character's goal and starting plan to reflect how they would engage THIS player given their "
         "personality, background and stated plan - grounded in canon.\n"
         "- Keep the character's canon identity and voice. Never invent new characters.\n"
-        "- Output ONLY JSON matching the schema exactly. No extra text, no markdown."
+        "- Output ONLY JSON matching the schema exactly. no markdown."
     )
     user = {
-        "task": "Project each character's initial stats, goal and plan for this player.",
+        "task": "Project each character's initial stats, goal and plan based on there profile and canon story.",
         "player": player.model_dump(mode="json"),
         "player_own_plan": player.own_plan,
         "world_lore": world.model_dump(mode="json"),
@@ -57,6 +58,7 @@ def build_cast_prompt(
                     "goal": "str - updated goal given the player's plan",
                     "plan_objective": "str - what the character now wants from the player",
                     "plan": "str - how the character will counter/engage the player",
+                    "Knowledge": "str - what this characher knows and what he don't know about this world",
                     "plan_status": "'ongoing' | 'succeeded' | 'failed' | 'changed'",
                 }
             ]
@@ -189,8 +191,6 @@ def build_r2_prompt(
     user = {
         "task": f"Act as {character.get('id')} and respond to the player for this turn.",
         "character_bible": character,
-        "character_current_plan": character_plan,
-        "character_live_stats": character_stats,
         "skill_analysis_from_listener": r1_output,
         "mission_context": mission_context,
         "full_conversation_this_mission": conversation,

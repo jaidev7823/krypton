@@ -143,6 +143,16 @@ def run_checks():
     check(row.character_states["L"]["stats"]["suspicion_towards_player"] == 5,
           "L suspicion projected to 5")
 
+    # Every LLM call is audited to agent_calls - including caster + mission_architect
+    calls = db_module.get_agent_calls(sid)
+    agents = [c.agent for c in calls]
+    check("caster" in agents, f"caster logged to agent_calls (got {agents})")
+    check("mission_architect" in agents, f"mission_architect logged to agent_calls (got {agents})")
+    check(all(c.turn_number == 0 for c in calls), "plan-time agents logged under turn 0")
+    ma_call = next(c for c in calls if c.agent == "mission_architect")
+    check(bool(ma_call.system_prompt) and bool(ma_call.raw_response),
+          "mission_architect audit stores prompt + raw response")
+
     # STATE 3 -> 4: enter mission -> no LLM, live
     r = main._run_turn(TurnRequest(session_id=sid, action="enter_mission", new_player_input=""))
     check(r.game_state == "live_mission", "enter_mission -> live_mission")
