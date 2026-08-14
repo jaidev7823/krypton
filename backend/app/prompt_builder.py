@@ -31,20 +31,22 @@ def build_cast_prompt(
 ) -> tuple[str, dict]:
     system = (
         "You are the Cast Projection Director for a living world negotiation game.\n"
-        "Your only job: predict how every canon character's plan will be for this world based on canon.\n"
-        "Other charachter do not know what player planned so do not make charachter plans based on player's plan.\n"
+        "Your only job: predict how every canon character currently thinks and what problem they face based on canon.\n"
+        "If there charachter havn't met with the player then they should not have any problem or solution based on the player.\n"
+        "Other charachters should not have any problem or solution based on the player's plan if they aren't aware of player existence there should be a reason why they know player beforehand it should not be like they just know him.\n"
         "Rules:\n"
         "- Stats default to 0 (neutral). Raise a stat ONLY where the player's personality plausibly provokes it if there is chance charachter knows him: "
         "trust if the plan serves the character's interests, suspicion if it threatens them, "
         "stress if the plan is risky for them.\n"
         "- Stats are 0-10 (0 = none, 10 = maximum).\n"
-        "- Rewrite each character's goal and starting plan to reflect how they would engage THIS player given their "
-        "personality, background and stated plan - grounded in canon.\n"
+        "- Rewrite each character's goal, current problem and solution to reflect the situation they face in this world - "
+        "grounded in canon, given the player's personality/background.\n"
+        "- If a character has no real problem-solving framework, write 'None'.\n"
         "- Keep the character's canon identity and voice. Never invent new characters.\n"
         "- Output ONLY JSON matching the schema exactly. no markdown."
     )
     user = {
-        "task": "Project each character's initial stats, goal and plan based on there profile and canon story.",
+        "task": "Project each character's initial stats, goal, current problem and solution based on their profile and the canon story.",
         "player": player.model_dump(mode="json"),
         "player_own_plan": player.own_plan,
         "world_lore": world.model_dump(mode="json"),
@@ -55,11 +57,10 @@ def build_cast_prompt(
                     "trust": "int 0-10",
                     "suspicion": "int 0-10",
                     "stress": "int 0-10",
-                    "goal": "str - updated goal given the player's plan",
-                    "plan_objective": "str - what the character now wants from the player",
-                    "plan": "str - how the character will counter/engage the player",
-                    "Knowledge": "str - what this characher knows and what he don't know about this world",
-                    "plan_status": "'ongoing' | 'succeeded' | 'failed' | 'changed'",
+                    "goal": "str - updated goal for this situation",
+                    "problem_solving_framework": "str - how this character approaches problems, or 'None'",
+                    "current_problem": "str - the problem this character currently faces",
+                    "solution": "str - the character's current solution to that problem",
                 }
             ]
         },
@@ -77,14 +78,14 @@ def build_r0_prompt(
     character_states: dict[str, Any] | None = None,
 ) -> tuple[str, dict]:
     system = (
-        "You are the Mission Architect for a living world negotiation game.\n"
+        "You are the Mission Architect for a simulation world.\n"
         "Your only job is to turn the PLAYER'S OWN plan into a concrete mission chain.\n"
         "Rules:\n"
         "- Break the player's own_plan into 4-5 winnable missions that lead to their goal.\n"
         "- Each mission has a location, a clear objective with a stat goal, a reward, and the exact bible characters present.\n"
         "- 'characters' MUST only use ids from the world bible's autonomous_players. Never invent characters.\n"
         "- Missions escalate: earlier missions are low-stakes (a single character), later ones raise the stakes.\n"
-        "- Read current_character_states: those are the LIVE stats/goals/plans AFTER the player's plan was projected. "
+        "- Read current_character_states: those are the LIVE stats/goals/current problems AFTER the cast was projected. "
         "Mission objectives must reference the current values (e.g. 'Raise Matsuda trust from 2 to 7').\n"
         "- Do NOT write dialogue or narration. Missions are objectives, not story.\n"
         "- Output ONLY JSON matching the schema exactly. No extra text, no markdown."
@@ -94,7 +95,9 @@ def build_r0_prompt(
         for cid, s in character_states.items():
             live[cid] = {
                 "goal": s.get("goal", ""),
-                "plan": s.get("plan", {}),
+                "problem_solving_framework": s.get("problem_solving_framework", ""),
+                "current_problem": s.get("current_problem", ""),
+                "solution": s.get("solution", ""),
                 "stats": s.get("stats", {}),
             }
     user = {
@@ -168,23 +171,22 @@ def build_r1_prompt(
 
 def build_r2_prompt(
     character: dict[str, Any],
-    character_plan: dict[str, Any],
-    character_stats: dict[str, Any],
     mission_context: dict[str, Any],
     conversation: list[dict[str, str]],
     r1_output: dict[str, Any],
     world_name: str,
 ) -> tuple[str, dict]:
     system = (
-        f"You are {character.get('id', '?')} from {world_name}. You are an autonomous player with your own goal and plan.\n"
+        f"You are {character.get('id', '?')} from {world_name}. You are an autonomous character with your own goal, "
+        "current problem and solution.\n"
         "Rules:\n"
         "- Speak EXACTLY in your dialogue_style: use your vocab, follow speech_pattern, never say the never_says.\n"
-        "- You have a private plan and objective. Think using your planning_framework.\n"
+        "- You have a current problem you are facing and a solution you are trying. Think using your problem_solving_framework.\n"
         "- You received an analysis of the player's skill usage. React as YOURSELF, not as a fixed rule.\n"
         "- If the player used a skill well, react positively and update your stats. Decide deltas based on YOUR personality.\n"
         "- Stats live on a 0-10 scale (0 = none, 10 = max). Deltas are small integers, typically -2..+2.\n"
-        "- Set a challenge_for_player: the next skill from the skill bible the player must use to beat your dialogue.\n"
-        "- inner_thought is private and never spoken - it reflects how your planning_framework interprets this exchange.\n"
+        "- inner_thought is private and never spoken - it reflects how your problem_solving_framework interprets this exchange.\n"
+        "- If this exchange changes your problem or solution, update current_problem and solution.\n"
         "- Never break character. Never mention you are AI.\n"
         "- Output ONLY JSON matching the schema exactly."
     )
@@ -198,20 +200,14 @@ def build_r2_prompt(
             "character_id": "your id",
             "inner_thought": "str - private thought",
             "dialogue": "str - what you say out loud",
-            "did_change_plan": "bool",
-            "plan_status": "'ongoing' | 'succeeded' | 'failed' | 'changed'",
-            "new_plan": "null or {objective, plan, status}",
             "stat_changes": {
                 "trust": {"delta": "int", "reason": "str"},
                 "suspicion": {"delta": "int", "reason": "str"},
                 "stress": {"delta": "int", "reason": "str"}
             },
-            "challenge_for_player": {
-                "required_concept": "skill id from bible",
-                "why": "str"
-            },
-            "objective": "str - your current objective",
-            "how_plan_helps_objective": "str"
+            "current_problem": "str - the problem you currently face (keep or update)",
+            "solution": "str - your current solution to that problem (keep or update)",
+            "problem_solving_framework": "str - how you approach problems, or 'None'"
         },
     }
     return system, user

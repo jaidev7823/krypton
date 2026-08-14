@@ -6,7 +6,6 @@ import { useGameStore } from "@/store/useGameStore";
 import { NarrationBubble } from "./NarrationBubble";
 import { CharacterMessage } from "./CharacterMessage";
 import { PlayerMessage } from "./PlayerMessage";
-import { ChallengeHint } from "./ChallengeHint";
 import { InputBar } from "./InputBar";
 
 export function ChatContainer() {
@@ -57,7 +56,6 @@ export function ChatContainer() {
           <div ref={bottomRef} />
         </div>
       </div>
-      <ChallengeHint />
       <InputBar />
     </div>
   );

@@ -113,7 +113,7 @@ def seed_character_states(world: WorldBible) -> dict:
     """Initialise live character state from the bible for a new session.
 
     Stats always start at 0 (neutral). The Cast Projection agent (R0-Cast)
-    sets each character's stats/goal/plan once the player reveals their plan.
+    sets each character's stats/goal/problem/solution once the player reveals their plan.
 
     No character is present until the player's plan is broken into missions;
     presence is derived from the active mission's cast each turn (STATE 3/4).
@@ -124,21 +124,17 @@ def seed_character_states(world: WorldBible) -> dict:
         stats["trust_towards_player"] = 0
         stats["suspicion_towards_player"] = 0
         stats["stress"] = 0
-        starting_plan = char.starting_plan
-        if isinstance(starting_plan, str):
-            plan = {"objective": starting_plan, "plan": starting_plan, "status": "ongoing"}
-        else:
-            plan = starting_plan.model_dump(mode="json")
         states[char.id] = {
             "id": char.id,
             "name": char.canon_name or char.id,
             "stats": stats,
             "memory": list(char.memory_about_player),
-            "plan": plan,
+            "problem_solving_framework": _dump_or_plain(char.problem_solving_framework),
+            "current_problem": char.current_problem,
+            "solution": char.solution,
             "knowledge": char.knowledge.model_dump(mode="json"),
             "goal": char.goal,
             "dialogue_style": _dump_or_plain(char.dialogue_style),
-            "planning_framework": _dump_or_plain(char.planning_framework),
             "sample_audio_path": char.stats.sample_audio_path,
             "present": False,
         }
@@ -164,21 +160,7 @@ STAT_KEY_MAP = {
 }
 
 
-def normalize_concept(concept: str, skill_bible: SkillBible) -> str:
-    """Map a (possibly sloppy) LLM concept id onto a real skill id."""
-    if not concept:
-        return ""
-    concept_l = concept.strip().upper().rstrip("S")
-    for skill in skill_bible.skills:
-        if skill.id.upper() == concept_l:
-            return skill.id
-    for skill in skill_bible.skills:
-        if skill.id.upper() in concept_l or concept_l in skill.id.upper():
-            return skill.id
-    return concept
-
-
-def apply_r2(state: dict, out: CharacterBrainOutput, skill_bible: SkillBible) -> None:
+def apply_r2(state: dict, out: CharacterBrainOutput) -> None:
     """Apply one character's R2 output to the live state."""
     cid = out.character_id
     if cid not in state:
@@ -189,16 +171,14 @@ def apply_r2(state: dict, out: CharacterBrainOutput, skill_bible: SkillBible) ->
         ch = getattr(out.stat_changes, short, None)
         if ch is not None and ch.delta:
             stats[canonical] = max(0, min(10, stats.get(canonical, 0) + ch.delta))
-    if out.did_change_plan and out.new_plan:
-        char["plan"] = {**out.new_plan, "status": out.plan_status}
-    else:
-        char["plan"]["status"] = out.plan_status
+    if out.current_problem.strip():
+        char["current_problem"] = out.current_problem
+    if out.solution.strip():
+        char["solution"] = out.solution
+    if out.problem_solving_framework.strip():
+        char["problem_solving_framework"] = out.problem_solving_framework
     if out.dialogue.strip():
         char["memory"].append(f"{out.dialogue[:90]}")
-    if out.challenge_for_player and out.challenge_for_player.required_concept:
-        out.challenge_for_player.required_concept = normalize_concept(
-            out.challenge_for_player.required_concept, skill_bible
-        )
 
 
 def chain_progress(mission_state: dict) -> str:
@@ -375,7 +355,7 @@ def _run_cast_projection(
     on_attempt=None,
 ) -> None:
     """R0-Cast: reset each character's stance from zero and let the LLM project
-    new stats, goal and plan from the player's plan + profile + canon."""
+    new stats, goal, current problem and solution from the player's profile + canon."""
     system, user = build_cast_prompt(player, world)
     out = llm_caller.call_json(
         system, user, CastProjectionOutput,
@@ -391,12 +371,11 @@ def _run_cast_projection(
         stats["stress"] = max(0, min(10, p.stress))
         if p.goal:
             c["goal"] = p.goal
-        if p.plan_objective or p.plan:
-            c["plan"] = {
-                "objective": p.plan_objective or c["plan"].get("objective", ""),
-                "plan": p.plan or c["plan"].get("plan", ""),
-                "status": p.plan_status or "ongoing",
-            }
+        if p.current_problem or p.solution:
+            c["current_problem"] = p.current_problem or c.get("current_problem", "")
+            c["solution"] = p.solution or c.get("solution", "")
+        if p.problem_solving_framework:
+            c["problem_solving_framework"] = p.problem_solving_framework
 
 
 def _build_mission_chain(
@@ -521,8 +500,6 @@ def _run_live_turn(
         char = character_states[cid]
         r2_system, r2_user = build_r2_prompt(
             character=char,
-            character_plan=char.get("plan", {}),
-            character_stats=char.get("stats", {}),
             mission_context=mctx,
             conversation=conversation,
             r1_output=r1.model_dump(mode="json"),
@@ -553,7 +530,7 @@ def _run_live_turn(
 
     # Apply state changes
     for out in r2_outputs:
-        apply_r2(character_states, out, skill)
+        apply_r2(character_states, out)
     # Presence is ALWAYS the mission cast - ignore R3's scene_update so the
     # model can never drag in characters that are not part of the mission.
     _sync_presence(character_states, present_ids)

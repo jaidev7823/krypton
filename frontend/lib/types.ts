@@ -8,11 +8,6 @@ export interface SkillFeedback {
   feedback_for_player: string;
 }
 
-export interface Challenge {
-  required_concept: string;
-  why: string;
-}
-
 export interface StatChange {
   delta: number;
   reason: string;
@@ -32,7 +27,9 @@ export interface GameTurnCharacter {
   stats: Record<string, number>;
   stat_deltas: Record<string, number>;
   memory: string[];
-  challenge_for_player?: Challenge | null;
+  current_problem: string;
+  solution: string;
+  problem_solving_framework: string;
   pfp: string;
   present: boolean;
 }

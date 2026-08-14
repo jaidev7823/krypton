@@ -10,7 +10,7 @@ break the contract.
 
 from __future__ import annotations
 
-from typing import Any, Literal, Optional
+from typing import Any, Optional
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
@@ -31,7 +31,7 @@ class StructuredDialogueStyle(PermissiveModel):
     emotional_range: str = ""
 
 
-class StructuredPlanningFramework(PermissiveModel):
+class StructuredProblemSolvingFramework(PermissiveModel):
     type: str = ""
     how_he_plans: str = ""
     weakness: str = ""
@@ -41,12 +41,6 @@ class Knowledge(PermissiveModel):
     knows: list[str] = Field(default_factory=list)
     does_not_know: list[str] = Field(default_factory=list)
     suspects: list[str] = Field(default_factory=list)
-
-
-class StructuredStartingPlan(PermissiveModel):
-    objective: str = ""
-    plan: str = ""
-    status: str = "ongoing"
 
 
 class CharacterStats(PermissiveModel):
@@ -63,11 +57,12 @@ class AutonomousPlayer(PermissiveModel):
     canon_name: str = ""
     role: str = ""
     dialogue_style: str | StructuredDialogueStyle = ""
-    planning_framework: str | StructuredPlanningFramework = ""
+    problem_solving_framework: str | StructuredProblemSolvingFramework = ""
     knowledge: Knowledge = Field(default_factory=Knowledge)
     goal: str = ""
     motivation: str = ""
-    starting_plan: str | StructuredStartingPlan = ""
+    current_problem: str = ""
+    solution: str = ""
     memory_about_player: list[str] = Field(default_factory=list)
     stats: CharacterStats = Field(default_factory=CharacterStats)
 
@@ -168,22 +163,14 @@ class StatChanges(PermissiveModel):
     stress: StatChange = Field(default_factory=StatChange)
 
 
-class Challenge(PermissiveModel):
-    required_concept: str = ""
-    why: str = ""
-
-
 class CharacterBrainOutput(PermissiveModel):
     character_id: str
     inner_thought: str = ""
     dialogue: str = ""
-    did_change_plan: bool = False
-    plan_status: str = "ongoing"
-    new_plan: Optional[dict[str, Any]] = None
     stat_changes: StatChanges = Field(default_factory=StatChanges)
-    challenge_for_player: Challenge = Field(default_factory=Challenge)
-    objective: str = ""
-    how_plan_helps_objective: str = ""
+    current_problem: str = ""
+    solution: str = ""
+    problem_solving_framework: str = ""
 
 
 class NextMission(PermissiveModel):
@@ -234,19 +221,19 @@ class MissionArchitectOutput(PermissiveModel):
 
 
 class CharacterProjection(PermissiveModel):
-    """One character's projected starting stance once the player's plan is known."""
+    """One character's projected starting stance for this world/player."""
     character_id: str
     trust: int = 0
     suspicion: int = 0
     stress: int = 0
     goal: str = ""
-    plan_objective: str = ""
-    plan: str = ""
-    plan_status: str = "ongoing"
+    problem_solving_framework: str = ""
+    current_problem: str = ""
+    solution: str = ""
 
 
 class CastProjectionOutput(PermissiveModel):
-    """R0-Cast output - how every canon character's stats/goal/plan shift for THIS player."""
+    """R0-Cast output - how every canon character's stats/goal/problem/solution shift for THIS player."""
     characters: list[CharacterProjection] = Field(default_factory=list)
 
 
@@ -274,7 +261,9 @@ class GameTurnCharacter(PermissiveModel):
     stats: dict[str, Any] = Field(default_factory=dict)
     stat_deltas: dict[str, int] = Field(default_factory=dict)
     memory: list[str] = Field(default_factory=list)
-    challenge_for_player: Optional[Challenge] = None
+    current_problem: str = ""
+    solution: str = ""
+    problem_solving_framework: str = ""
     pfp: str = ""
     present: bool = True
 

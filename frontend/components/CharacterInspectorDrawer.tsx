@@ -45,20 +45,30 @@ export function CharacterInspectorDrawer({ characterId }: { characterId: string 
 
         {innerThought && <InnerThought text={innerThought} />}
 
-        {char.challenge_for_player && (
+        <div className="space-y-3">
           <div className="rounded-xl border border-edge bg-surface-2 p-3">
             <p className="text-[11px] font-semibold uppercase tracking-wide text-accent">
-              Challenge
+              Current problem
             </p>
             <p className="mt-1 text-sm text-ink">
-              {char.name} expects{" "}
-              <span className="font-semibold text-accent">
-                {char.challenge_for_player.required_concept}
-              </span>
+              {char.current_problem || "—"}
             </p>
-            <p className="mt-1 text-xs text-muted">{char.challenge_for_player.why}</p>
           </div>
-        )}
+          <div className="rounded-xl border border-edge bg-surface-2 p-3">
+            <p className="text-[11px] font-semibold uppercase tracking-wide text-accent">
+              Solution
+            </p>
+            <p className="mt-1 text-sm text-ink">{char.solution || "—"}</p>
+          </div>
+          <div className="rounded-xl border border-edge bg-surface-2 p-3">
+            <p className="text-[11px] font-semibold uppercase tracking-wide text-accent">
+              Approach
+            </p>
+            <p className="mt-1 text-sm text-ink">
+              {char.problem_solving_framework || "—"}
+            </p>
+          </div>
+        </div>
 
         <MemoryList memory={char.memory} />
       </div>

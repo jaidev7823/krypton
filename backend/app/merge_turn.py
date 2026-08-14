@@ -57,7 +57,7 @@ def merge_turn(
         reward=mission_state.get("reward", "") if mission_state else "",
     )
 
-    # Character summaries (with live stats + deltas + memory + challenge)
+    # Character summaries (with live stats + deltas + memory + problem/solution)
     chars_by_id = {c["id"]: c for c in characters_state}
     characters: list[GameTurnCharacter] = []
     for out in r2_outputs:
@@ -72,7 +72,9 @@ def merge_turn(
                 stats=state.get("stats", {}),
                 stat_deltas=_stat_deltas(out),
                 memory=memory,
-                challenge_for_player=out.challenge_for_player or None,
+                current_problem=state.get("current_problem", ""),
+                solution=state.get("solution", ""),
+                problem_solving_framework=state.get("problem_solving_framework", ""),
                 pfp=state.get("pfp", f"/pfp/{cid.lower()}.png"),
                 present=state.get("present", True),
             )

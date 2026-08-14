@@ -43,12 +43,12 @@ def _fake_model(agent):
         return CastProjectionOutput(characters=[
             CharacterProjection(character_id="MATSUDA", trust=4, suspicion=1,
                                 stress=2, goal="Find a reliable witness",
-                                plan_objective="Get Jay's help",
-                                plan="Ask Jay friendly questions"),
+                                current_problem="No witness to Kira's methods",
+                                solution="Ask Jay friendly questions"),
             CharacterProjection(character_id="L", trust=1, suspicion=5, stress=3,
                                 goal="Identify Kira",
-                                plan_objective="Watch Jay closely",
-                                plan="Observe without revealing himself"),
+                                current_problem="Kira acts without a trace",
+                                solution="Observe without revealing himself"),
         ])
     if agent == "mission_architect":
         return MissionArchitectOutput(mission_chain=[
@@ -139,7 +139,7 @@ def run_checks():
     check(mat["stats"]["trust_towards_player"] == 4, "MATSUDA trust projected to 4")
     check(mat["stats"]["suspicion_towards_player"] == 1, "MATSUDA suspicion projected to 1")
     check(mat["goal"] == "Find a reliable witness", "MATSUDA goal rewritten by caster")
-    check(mat["plan"]["plan"].startswith("Ask Jay"), "MATSUDA plan rewritten by caster")
+    check(mat["solution"].startswith("Ask Jay"), "MATSUDA solution rewritten by caster")
     check(row.character_states["L"]["stats"]["suspicion_towards_player"] == 5,
           "L suspicion projected to 5")
 
