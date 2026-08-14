@@ -189,6 +189,7 @@ class CharacterBrainOutput(PermissiveModel):
     reasoning: CharacterReasoning = Field(default_factory=CharacterReasoning)
     inner_thought: str = ""
     dialogue: str = ""
+    memory: str = ""
     stat_changes: StatChanges = Field(default_factory=StatChanges)
     current_problem: str = ""
     solution: str = ""

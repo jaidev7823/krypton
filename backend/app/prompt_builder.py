@@ -338,6 +338,12 @@ def build_r2_prompt(
         "Move trust/familiarity/respect/suspicion/rapport/disclosure/stress only if the player's words genuinely affect how you feel about them.\n"
         "- Stats live on a 0-10 scale (0 = none, 10 = max). Deltas are small integers, typically -2..+2.\n"
         "- inner_thought is private and never spoken - it reflects how your problem_solving_framework interprets this exchange.\n"
+        "- memory is a short FIRST-PERSON narrative line you write in YOUR OWN voice, like a diary entry - it records what "
+        "just happened with the player and how you feel about them now. It is NOT a transcript and never quotes your "
+        "dialogue. Examples: 'A stranger came up to me in the lobby and said hi - I answered politely, we're still talking, "
+        "I'm keeping my guard up.' / 'He pushed me for answers I won't give, that put me on edge.' If you END or LEAVE the "
+        "conversation this turn, the memory must say you left and why: 'I left because he kept pressing about the case and "
+        "I didn't trust him.'\n"
         "- If this exchange changes your problem or solution, update current_problem and solution.\n"
         "- Never break character. Never mention you are AI.\n"
         "- Output ONLY JSON matching the schema exactly.\n"
@@ -369,6 +375,7 @@ def build_r2_prompt(
             },
             "inner_thought": "str - private thought",
             "dialogue": "str - what you say out loud",
+            "memory": "str - first-person narrative diary line about what just happened and how you feel now (never quote your dialogue); if you leave, say you left and why",
             "stat_changes": {
                 "trust": {"delta": "int", "reason": "str"},
                 "familiarity": {"delta": "int", "reason": "str"},

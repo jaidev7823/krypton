@@ -82,6 +82,7 @@ def _fake_model(agent):
                     current_interaction="The player alienated me.",
                 ),
                 dialogue=f"{cid} gets frustrated and leaves",
+                memory=f"{cid} left because the player alienated me and I no longer trust them.",
                 inner_thought=f"{cid} thinks this is hopeless",
                 stat_changes=StatChanges(
                     trust=StatChange(delta=-4, reason="Player was off-putting"),
@@ -100,6 +101,7 @@ def _fake_model(agent):
                 current_interaction="The player spoke to me directly.",
             ),
             dialogue=f"{cid} speaks",
+            memory=f"A stranger came up to me and said hello - I answered, we are still talking.",
             inner_thought=f"{cid} thinks",
             stat_changes=StatChanges(
                 trust=StatChange(delta=1, reason="Player was friendly"),
@@ -242,6 +244,11 @@ def run_checks():
     mat = row.character_states["MATSUDA"]
     check(mat["stats"]["trust_towards_player"] == 5 and mat["stats"]["stress"] == 1,
           "R2 applied all 7 stat deltas (trust+1, stress-1)")
+    # memory is a narrative diary line from the brain - never a raw dialogue transcript
+    check(any("still talking" in m for m in mat["memory"]),
+          "memory stored as narrative diary entry (not hardcoded dialogue)")
+    check(not any("speaks" in m for m in mat["memory"]),
+          "memory never stores raw dialogue")
     check(mat["stats"]["familiarity_towards_player"] == 3
           and mat["stats"]["respect_towards_player"] == 4
           and mat["stats"]["suspicion_towards_player"] == 0
@@ -293,6 +300,8 @@ def run_checks():
           "persisted current mission marked failed (retry not auto-advanced)")
     check(row.character_states["MATSUDA"]["stats"]["trust_towards_player"] == 0,
           "trust cratered (4 - 4) - the damage persists for the retry")
+    check(any("left" in m for m in row.character_states["MATSUDA"]["memory"]),
+          "leaving character updates memory with the reason they left")
     # retry: re-entering the failed mission works and reactivates it
     r = main._run_turn(TurnRequest(session_id=fail_sid, action="enter_mission", new_player_input=""))
     check(r.game_state == "live_mission" and r.turn.mission.status == "active",

@@ -187,8 +187,8 @@ def apply_r2(state: dict, out: CharacterBrainOutput) -> None:
         char["solution"] = out.solution
     if out.problem_solving_framework.strip():
         char["problem_solving_framework"] = out.problem_solving_framework
-    if out.dialogue.strip():
-        char["memory"].append(f"{out.dialogue[:90]}")
+    if out.memory.strip():
+        char["memory"].append(out.memory.strip())
 
 
 def chain_progress(mission_state: dict) -> str:
