@@ -122,7 +122,11 @@ def seed_character_states(world: WorldBible) -> dict:
     for char in world.autonomous_players:
         stats = char.stats.model_dump(mode="json")
         stats["trust_towards_player"] = 0
+        stats["familiarity_towards_player"] = 0
+        stats["respect_towards_player"] = 0
         stats["suspicion_towards_player"] = 0
+        stats["rapport_towards_player"] = 0
+        stats["disclosure_level"] = 0
         stats["stress"] = 0
         states[char.id] = {
             "id": char.id,
@@ -132,6 +136,8 @@ def seed_character_states(world: WorldBible) -> dict:
             "problem_solving_framework": _dump_or_plain(char.problem_solving_framework),
             "current_problem": char.current_problem,
             "solution": char.solution,
+            "relationship_dynamics": char.relationship_dynamics,
+            "stat_ladders": char.stat_ladders,
             "knowledge": char.knowledge.model_dump(mode="json"),
             "goal": char.goal,
             "dialogue_style": _dump_or_plain(char.dialogue_style),
@@ -155,7 +161,11 @@ def mission_context(mission_state: dict, scene: dict) -> dict:
 
 STAT_KEY_MAP = {
     "trust": "trust_towards_player",
+    "familiarity": "familiarity_towards_player",
+    "respect": "respect_towards_player",
     "suspicion": "suspicion_towards_player",
+    "rapport": "rapport_towards_player",
+    "disclosure_level": "disclosure_level",
     "stress": "stress",
 }
 
@@ -367,7 +377,11 @@ def _run_cast_projection(
             continue
         stats = c["stats"]
         stats["trust_towards_player"] = max(0, min(10, p.trust))
+        stats["familiarity_towards_player"] = max(0, min(10, p.familiarity))
+        stats["respect_towards_player"] = max(0, min(10, p.respect))
         stats["suspicion_towards_player"] = max(0, min(10, p.suspicion))
+        stats["rapport_towards_player"] = max(0, min(10, p.rapport))
+        stats["disclosure_level"] = max(0, min(10, p.disclosure_level))
         stats["stress"] = max(0, min(10, p.stress))
         if p.goal:
             c["goal"] = p.goal
@@ -401,7 +415,6 @@ def _build_mission_chain(
     mission_state["current"] = chain[0]
     mission_state["history"] = mission_state.get("history") or []
     return mission_state
-
 
 def _mission_turn(turn_id: int, mission_state: dict, narration: str) -> GameTurn:
     current = mission_state.get("current") or {}

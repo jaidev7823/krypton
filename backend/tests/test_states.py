@@ -30,8 +30,9 @@ SQLModel.metadata.create_all(db_module.engine)
 
 from app import llm_caller, main  # noqa: E402
 from app.types import (  # noqa: E402
-    CastProjectionOutput, CharacterBrainOutput, CharacterProjection, Mission,
-    MissionArchitectOutput, NarratorOutput, SkillFeedback, TurnRequest,
+    CastProjectionOutput, CharacterBrainOutput, CharacterProjection, CharacterReasoning,
+    Mission, MissionArchitectOutput, NarratorOutput, SkillFeedback, StatChange, StatChanges,
+    TurnRequest,
 )
 
 CALLS: list[str] = []
@@ -41,12 +42,14 @@ LIVE_TURNS = {"count": 0}
 def _fake_model(agent):
     if agent == "caster":
         return CastProjectionOutput(characters=[
-            CharacterProjection(character_id="MATSUDA", trust=4, suspicion=1,
+            CharacterProjection(character_id="MATSUDA", trust=4, familiarity=2,
+                                respect=3, suspicion=1, rapport=4, disclosure_level=3,
                                 stress=2, goal="Find a reliable witness",
                                 current_problem="No witness to Kira's methods",
                                 solution="Ask Jay friendly questions"),
-            CharacterProjection(character_id="L", trust=1, suspicion=5, stress=3,
-                                goal="Identify Kira",
+            CharacterProjection(character_id="L", trust=1, familiarity=0,
+                                respect=5, suspicion=5, rapport=0, disclosure_level=1,
+                                stress=3, goal="Identify Kira",
                                 current_problem="Kira acts without a trace",
                                 solution="Observe without revealing himself"),
         ])
@@ -63,8 +66,28 @@ def _fake_model(agent):
         return SkillFeedback(did_use_concept=False)
     if agent.startswith("brain:"):
         cid = agent.split(":", 1)[1]
-        return CharacterBrainOutput(character_id=cid, dialogue=f"{cid} speaks",
-                                    inner_thought=f"{cid} thinks")
+        return CharacterBrainOutput(
+            character_id=cid,
+            reasoning=CharacterReasoning(
+                personality="Warm and eager",
+                current_goal="Win the player over",
+                current_problem="Prove myself",
+                current_strategy="Be friendly",
+                relationship_state=f"{cid} trusts the player moderately and is willing to open up.",
+                current_interaction="The player spoke to me directly.",
+            ),
+            dialogue=f"{cid} speaks",
+            inner_thought=f"{cid} thinks",
+            stat_changes=StatChanges(
+                trust=StatChange(delta=1, reason="Player was friendly"),
+                familiarity=StatChange(delta=1, reason="Player shared background"),
+                respect=StatChange(delta=1, reason="Player showed competence"),
+                suspicion=StatChange(delta=-1, reason="Player seemed genuine"),
+                rapport=StatChange(delta=1, reason="Easy rapport"),
+                disclosure_level=StatChange(delta=1, reason="Player opened up"),
+                stress=StatChange(delta=-1, reason="Reassured"),
+            ),
+        )
     if agent == "narrator":
         won = LIVE_TURNS["count"] >= 1
         return NarratorOutput(narration="The cafeteria hums.",
@@ -118,10 +141,16 @@ def run_checks():
     world = main.load_world_bible("Death Note")
     seeded = main.seed_character_states(world)
     check(all(seeded[cid]["stats"]["trust_towards_player"] == 0
+              and seeded[cid]["stats"]["familiarity_towards_player"] == 0
+              and seeded[cid]["stats"]["respect_towards_player"] == 0
               and seeded[cid]["stats"]["suspicion_towards_player"] == 0
+              and seeded[cid]["stats"]["rapport_towards_player"] == 0
+              and seeded[cid]["stats"]["disclosure_level"] == 0
               and seeded[cid]["stats"]["stress"] == 0
               for cid in ("L", "LIGHT", "MATSUDA", "SOICHIRO", "RYUK")),
-          "stats default to 0 before the plan is projected")
+          "all 7 stats default to 0 before the plan is projected")
+    check(all(bool(seeded[cid]["relationship_dynamics"]) for cid in ("L", "LIGHT", "MATSUDA", "SOICHIRO", "RYUK")),
+          "each character carries relationship_dynamics for the R2 brain")
 
     # STATE 1 -> 2: submit a plan -> caster THEN R0 runs ONCE, mission lobby
     r = main._run_turn(TurnRequest(session_id=sid, action="submit_plan",
@@ -138,10 +167,16 @@ def run_checks():
     mat = row.character_states["MATSUDA"]
     check(mat["stats"]["trust_towards_player"] == 4, "MATSUDA trust projected to 4")
     check(mat["stats"]["suspicion_towards_player"] == 1, "MATSUDA suspicion projected to 1")
+    check(mat["stats"]["familiarity_towards_player"] == 2, "MATSUDA familiarity projected to 2")
+    check(mat["stats"]["respect_towards_player"] == 3, "MATSUDA respect projected to 3")
+    check(mat["stats"]["rapport_towards_player"] == 4, "MATSUDA rapport projected to 4")
+    check(mat["stats"]["disclosure_level"] == 3, "MATSUDA disclosure projected to 3")
     check(mat["goal"] == "Find a reliable witness", "MATSUDA goal rewritten by caster")
     check(mat["solution"].startswith("Ask Jay"), "MATSUDA solution rewritten by caster")
     check(row.character_states["L"]["stats"]["suspicion_towards_player"] == 5,
           "L suspicion projected to 5")
+    check(row.character_states["L"]["stats"]["disclosure_level"] == 1,
+          "L disclosure projected to 1 (guarded even when engaged)")
 
     # Every LLM call is audited to agent_calls - including caster + mission_architect
     calls = db_module.get_agent_calls(sid)
@@ -169,6 +204,20 @@ def run_checks():
     check(present == ["MATSUDA"], f"presence synced to mission cast only (got {present})")
     check(all(not row.character_states[cid]["present"] for cid in ("L", "LIGHT", "RYUK")),
           "L/LIGHT/RYUK NOT in the room during Matsuda mission")
+    mat = row.character_states["MATSUDA"]
+    check(mat["stats"]["trust_towards_player"] == 5 and mat["stats"]["stress"] == 1,
+          "R2 applied all 7 stat deltas (trust+1, stress-1)")
+    check(mat["stats"]["familiarity_towards_player"] == 3
+          and mat["stats"]["respect_towards_player"] == 4
+          and mat["stats"]["suspicion_towards_player"] == 0
+          and mat["stats"]["rapport_towards_player"] == 5
+          and mat["stats"]["disclosure_level"] == 4,
+          "R2 applied familiarity/respect/rapport/disclosure deltas")
+
+    # R2 reasoning is threaded onto the turn character for the inspector drawer
+    mchar = next(c for c in r.turn.characters if c.id == "MATSUDA")
+    check(bool(mchar.relationship_state and mchar.relationship_state.startswith("MATSUDA")),
+          "turn character carries R2 reasoning.relationship_state")
 
     # STATE 4 -> 5: second live turn, R3 rules won -> advance to M2 lobby
     CALLS.clear()

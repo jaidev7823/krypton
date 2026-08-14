@@ -44,8 +44,12 @@ class Knowledge(PermissiveModel):
 
 
 class CharacterStats(PermissiveModel):
-    suspicion_towards_player: int = 0
     trust_towards_player: int = 0
+    familiarity_towards_player: int = 0
+    respect_towards_player: int = 0
+    suspicion_towards_player: int = 0
+    rapport_towards_player: int = 0
+    disclosure_level: int = 0
     stress: int = 0
     voice_id: str = ""
     sample_audio_path: str = ""
@@ -63,6 +67,8 @@ class AutonomousPlayer(PermissiveModel):
     motivation: str = ""
     current_problem: str = ""
     solution: str = ""
+    relationship_dynamics: str = ""
+    stat_ladders: dict[str, Any] = Field(default_factory=dict)
     memory_about_player: list[str] = Field(default_factory=list)
     stats: CharacterStats = Field(default_factory=CharacterStats)
 
@@ -159,12 +165,28 @@ class StatChange(PermissiveModel):
 
 class StatChanges(PermissiveModel):
     trust: StatChange = Field(default_factory=StatChange)
+    familiarity: StatChange = Field(default_factory=StatChange)
+    respect: StatChange = Field(default_factory=StatChange)
     suspicion: StatChange = Field(default_factory=StatChange)
+    rapport: StatChange = Field(default_factory=StatChange)
+    disclosure_level: StatChange = Field(default_factory=StatChange)
     stress: StatChange = Field(default_factory=StatChange)
+
+
+class CharacterReasoning(PermissiveModel):
+    """The chain R2 must derive from before producing dialogue, so stats bind
+    the character's behavior instead of being treated as inert metadata."""
+    personality: str = ""
+    current_goal: str = ""
+    current_problem: str = ""
+    current_strategy: str = ""
+    relationship_state: str = ""
+    current_interaction: str = ""
 
 
 class CharacterBrainOutput(PermissiveModel):
     character_id: str
+    reasoning: CharacterReasoning = Field(default_factory=CharacterReasoning)
     inner_thought: str = ""
     dialogue: str = ""
     stat_changes: StatChanges = Field(default_factory=StatChanges)
@@ -224,7 +246,11 @@ class CharacterProjection(PermissiveModel):
     """One character's projected starting stance for this world/player."""
     character_id: str
     trust: int = 0
+    familiarity: int = 0
+    respect: int = 0
     suspicion: int = 0
+    rapport: int = 0
+    disclosure_level: int = 0
     stress: int = 0
     goal: str = ""
     problem_solving_framework: str = ""
@@ -264,6 +290,7 @@ class GameTurnCharacter(PermissiveModel):
     current_problem: str = ""
     solution: str = ""
     problem_solving_framework: str = ""
+    relationship_state: str = ""
     pfp: str = ""
     present: bool = True
 

@@ -39,11 +39,24 @@ export function CharacterInspectorDrawer({ characterId }: { characterId: string 
       <div className="flex-1 space-y-5 overflow-y-auto p-4">
         <div className="space-y-3">
           <StatBar label="Trust" value={char.stats.trust_towards_player ?? 0} delta={char.stat_deltas.trust} good />
+          <StatBar label="Familiarity" value={char.stats.familiarity_towards_player ?? 0} delta={char.stat_deltas.familiarity} good />
+          <StatBar label="Respect" value={char.stats.respect_towards_player ?? 0} delta={char.stat_deltas.respect} good />
           <StatBar label="Suspicion" value={char.stats.suspicion_towards_player ?? 0} delta={char.stat_deltas.suspicion} good={false} />
+          <StatBar label="Rapport" value={char.stats.rapport_towards_player ?? 0} delta={char.stat_deltas.rapport} good />
+          <StatBar label="Disclosure" value={char.stats.disclosure_level ?? 0} delta={char.stat_deltas.disclosure_level} good />
           <StatBar label="Stress" value={char.stats.stress ?? 0} delta={char.stat_deltas.stress} good={false} />
         </div>
 
         {innerThought && <InnerThought text={innerThought} />}
+
+        {char.relationship_state && (
+          <div className="rounded-xl border border-edge bg-surface-2 p-3">
+            <p className="text-[11px] font-semibold uppercase tracking-wide text-accent">
+              Relationship state
+            </p>
+            <p className="mt-1 text-sm text-ink">{char.relationship_state}</p>
+          </div>
+        )}
 
         <div className="space-y-3">
           <div className="rounded-xl border border-edge bg-surface-2 p-3">

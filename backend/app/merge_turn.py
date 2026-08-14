@@ -22,7 +22,7 @@ from .types import (
 
 def _stat_deltas(char: CharacterBrainOutput) -> dict[str, int]:
     d = {}
-    for name in ("trust", "suspicion", "stress"):
+    for name in ("trust", "familiarity", "respect", "suspicion", "rapport", "disclosure_level", "stress"):
         ch = getattr(char.stat_changes, name, None)
         if ch is not None and ch.delta != 0:
             d[name] = ch.delta
@@ -75,6 +75,7 @@ def merge_turn(
                 current_problem=state.get("current_problem", ""),
                 solution=state.get("solution", ""),
                 problem_solving_framework=state.get("problem_solving_framework", ""),
+                relationship_state=out.reasoning.relationship_state if out.reasoning else "",
                 pfp=state.get("pfp", f"/pfp/{cid.lower()}.png"),
                 present=state.get("present", True),
             )

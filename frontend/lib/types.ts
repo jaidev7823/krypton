@@ -30,6 +30,7 @@ export interface GameTurnCharacter {
   current_problem: string;
   solution: string;
   problem_solving_framework: string;
+  relationship_state: string;
   pfp: string;
   present: boolean;
 }
@@ -98,6 +99,10 @@ export interface Mission {
 export interface CharacterStats {
   suspicion_towards_player: number;
   trust_towards_player: number;
+  familiarity_towards_player: number;
+  respect_towards_player: number;
+  rapport_towards_player: number;
+  disclosure_level: number;
   stress: number;
 }
 

@@ -17,6 +17,120 @@ from typing import Any
 from .types import PlayerSetup, SkillBible, WorldBible
 
 
+# ---------------------------------------------------------------------------
+# Stat behavior ladders
+#
+# Each stat is a shared 0-10 number, but what each value MEANS for a given
+# character is defined by a ladder: an ordered list of {max, behavior} bands.
+# DEFAULT_STAT_LADDERS applies to every character/world; a bible entry may
+# override individual stats via its `stat_ladders` field (partial override).
+# ---------------------------------------------------------------------------
+
+DEFAULT_STAT_LADDERS: dict[str, list[dict[str, Any]]] = {
+    "trust": [
+        {"max": 0, "behavior": "Cold/neutral, minimal disclosure."},
+        {"max": 1, "behavior": "Polite, guarded, mildly interested."},
+        {"max": 3, "behavior": "Comfortable enough for casual conversation."},
+        {"max": 5, "behavior": "Genuine social engagement, some personal disclosure."},
+        {"max": 7, "behavior": "Considerable openness and cooperation."},
+        {"max": 9, "behavior": "Strong personal confidence in you."},
+        {"max": 10, "behavior": "Exceptional trust; willing to rely on you."},
+    ],
+    "familiarity": [
+        {"max": 0, "behavior": "A complete stranger; no history."},
+        {"max": 1, "behavior": "Only a name or face is recognized."},
+        {"max": 3, "behavior": "A loose acquaintance; limited shared context."},
+        {"max": 5, "behavior": "Known well enough for regular, relaxed contact."},
+        {"max": 7, "behavior": "Close familiarity; knows your patterns and history."},
+        {"max": 9, "behavior": "One of the few who knows you intimately."},
+        {"max": 10, "behavior": "Boundless history; knows you as well as anyone can."},
+    ],
+    "respect": [
+        {"max": 0, "behavior": "Open disdain or dismissal."},
+        {"max": 1, "behavior": "Indifferent; you barely register."},
+        {"max": 3, "behavior": "Mild regard; your words carry little weight."},
+        {"max": 5, "behavior": "Genuine respect for your judgment."},
+        {"max": 7, "behavior": "High regard; your opinion genuinely matters."},
+        {"max": 9, "behavior": "Deep admiration; treats you as a peer or superior."},
+        {"max": 10, "behavior": "Holds you in the highest esteem."},
+    ],
+    "suspicion": [
+        {"max": 0, "behavior": "No concern about you at all."},
+        {"max": 1, "behavior": "Mildly watchful; nothing to fear yet."},
+        {"max": 3, "behavior": "Actively observing your behavior for tells."},
+        {"max": 5, "behavior": "Genuinely suspicious; probing and testing you."},
+        {"max": 7, "behavior": "Deep distrust; assumes you are hiding something."},
+        {"max": 9, "behavior": "Convinced you are a threat; minimal cooperation."},
+        {"max": 10, "behavior": "Hostile; treats you as an enemy."},
+    ],
+    "rapport": [
+        {"max": 0, "behavior": "No connection at all; conversation is stiff."},
+        {"max": 1, "behavior": "Awkward; some friction in every exchange."},
+        {"max": 3, "behavior": "Pleasant enough; small talk flows."},
+        {"max": 5, "behavior": "Comfortable rapport; banter comes naturally."},
+        {"max": 7, "behavior": "Strong rapport; easy, unguarded dialogue."},
+        {"max": 9, "behavior": "Deep bond; feels natural to be open with you."},
+        {"max": 10, "behavior": "Unshakeable connection; effortless trust and humor."},
+    ],
+    "disclosure_level": [
+        {"max": 0, "behavior": "Reveals nothing; surface pleasantries only."},
+        {"max": 1, "behavior": "Shares only trivial, public facts."},
+        {"max": 3, "behavior": "Offers general opinions; no private detail."},
+        {"max": 5, "behavior": "Some personal disclosure; guarded about secrets."},
+        {"max": 7, "behavior": "Open about feelings and private matters."},
+        {"max": 9, "behavior": "Freely shares secrets and plans."},
+        {"max": 10, "behavior": "Full transparency; hides nothing from you."},
+    ],
+    "stress": [
+        {"max": 0, "behavior": "Completely calm and composed."},
+        {"max": 1, "behavior": "Slightly uneasy; barely noticeable."},
+        {"max": 3, "behavior": "Noticeably tense; shorter answers."},
+        {"max": 5, "behavior": "Highly stressed; guarded, brittle, on edge."},
+        {"max": 7, "behavior": "Overwhelmed; prone to outbursts or silence."},
+        {"max": 9, "behavior": "Frayed; erratic, impulsive, hard to trust."},
+        {"max": 10, "behavior": "Breaking point; panic or total shutdown."},
+    ],
+}
+
+STAT_LABELS: dict[str, str] = {
+    "trust": "Trust",
+    "familiarity": "Familiarity",
+    "respect": "Respect",
+    "suspicion": "Suspicion",
+    "rapport": "Rapport",
+    "disclosure_level": "Disclosure",
+    "stress": "Stress",
+}
+
+
+def _ladder_for(stat: str, character: dict[str, Any]) -> list[dict[str, Any]]:
+    """Merged ladder for a stat: bible override wins, else code default."""
+    override = (character.get("stat_ladders") or {}).get(stat)
+    if override:
+        return override
+    return DEFAULT_STAT_LADDERS.get(stat, [{"max": 10, "behavior": ""}])
+
+
+def _band_for(stat: str, value: int, character: dict[str, Any]) -> str:
+    """Behavioral meaning of a stat value for this character."""
+    value = max(0, min(10, value))
+    for band in _ladder_for(stat, character):
+        if value <= band["max"]:
+            return str(band.get("behavior", ""))
+    return ""
+
+
+def stat_readout(stats: dict[str, Any], character: dict[str, Any]) -> str:
+    """Explicit sentences translating a character's stat numbers into behavior."""
+    lines = []
+    for stat in ("trust", "familiarity", "respect", "suspicion", "rapport", "disclosure_level", "stress"):
+        value = stats.get(stat, 0)
+        behavior = _band_for(stat, value, character)
+        label = STAT_LABELS.get(stat, stat)
+        lines.append(f"{label} {value}/10 - {behavior}".rstrip(" -"))
+    return "\n".join(lines)
+
+
 def _dump(obj: Any) -> str:
     return json.dumps(obj, ensure_ascii=False, indent=1, default=str)
 
@@ -36,8 +150,10 @@ def build_cast_prompt(
         "Other charachters should not have any problem or solution based on the player's plan if they aren't aware of player existence there should be a reason why they know player beforehand it should not be like they just know him.\n"
         "Rules:\n"
         "- Stats default to 0 (neutral). Raise a stat ONLY where the player's personality plausibly provokes it if there is chance charachter knows him: "
-        "trust if the plan serves the character's interests, suspicion if it threatens them, "
-        "stress if the plan is risky for them.\n"
+        "trust if the player's presence serves the character's interests, familiarity if they have plausible shared history, "
+        "respect if the player's background demands it, suspicion if the player threatens them, "
+        "rapport if they would naturally click, disclosure_level if the character would reveal private matters to a stranger, "
+        "stress if the player's presence is risky for them.\n"
         "- Stats are 0-10 (0 = none, 10 = maximum).\n"
         "- Rewrite each character's goal, current problem and solution to reflect the situation they face in this world - "
         "grounded in canon, given the player's personality/background.\n"
@@ -55,7 +171,11 @@ def build_cast_prompt(
                 {
                     "character_id": "bible character id",
                     "trust": "int 0-10",
+                    "familiarity": "int 0-10",
+                    "respect": "int 0-10",
                     "suspicion": "int 0-10",
+                    "rapport": "int 0-10",
+                    "disclosure_level": "int 0-10",
                     "stress": "int 0-10",
                     "goal": "str - updated goal for this situation",
                     "problem_solving_framework": "str - how this character approaches problems, or 'None'",
@@ -176,6 +296,10 @@ def build_r2_prompt(
     r1_output: dict[str, Any],
     world_name: str,
 ) -> tuple[str, dict]:
+    stats = character.get("stats") or {}
+    dynamics = character.get("relationship_dynamics", "")
+    readout = stat_readout(stats, character)
+    dynamics_block = f"\nYOUR RELATIONSHIP DYNAMICS (apply this when choosing stat deltas and behavior):\n{dynamics}\n" if dynamics else ""
     system = (
         f"You are {character.get('id', '?')} from {world_name}. You are an autonomous character with your own goal, "
         "current problem and solution.\n"
@@ -188,7 +312,17 @@ def build_r2_prompt(
         "- inner_thought is private and never spoken - it reflects how your problem_solving_framework interprets this exchange.\n"
         "- If this exchange changes your problem or solution, update current_problem and solution.\n"
         "- Never break character. Never mention you are AI.\n"
-        "- Output ONLY JSON matching the schema exactly."
+        "- Output ONLY JSON matching the schema exactly.\n"
+        f"\nYOUR RELATIONSHIP STATE WITH THE PLAYER (derived from your live stats - your dialogue MUST match this):\n{readout}\n"
+        f"{dynamics_block}"
+        "\nYour dialogue's warmth, formality, openness and how much you reveal MUST be consistent with your relationship state. "
+        "In particular: trust and rapport set how warm you are; familiarity sets how much shared context you assume; "
+        "respect sets how seriously you take the player; suspicion sets how much you probe and test them; "
+        "disclosure_level sets how much private information you will reveal (a low disclosure_level means you NEVER share "
+        "secrets, plans, or personal details); stress sets your composure.\n"
+        "Before you speak, work through the reasoning chain below IN ORDER and write the result into the 'reasoning' field. "
+        "relationship_state in your reasoning must restate the trust/familiarity/respect/suspicion/rapport/disclosure values "
+        "above and what they mean for THIS exchange. Then write dialogue that is consistent with that relationship_state.\n"
     )
     user = {
         "task": f"Act as {character.get('id')} and respond to the player for this turn.",
@@ -198,11 +332,23 @@ def build_r2_prompt(
         "full_conversation_this_mission": conversation,
         "output_schema": {
             "character_id": "your id",
+            "reasoning": {
+                "personality": "str - who you are and how you tend to behave",
+                "current_goal": "str - what you want right now",
+                "current_problem": "str - the problem you currently face",
+                "current_strategy": "str - how your problem_solving_framework says to proceed",
+                "relationship_state": "str - restate your trust/familiarity/respect/suspicion/rapport/disclosure levels and what they mean for this exchange",
+                "current_interaction": "str - what is happening right now and how you read it"
+            },
             "inner_thought": "str - private thought",
             "dialogue": "str - what you say out loud",
             "stat_changes": {
                 "trust": {"delta": "int", "reason": "str"},
+                "familiarity": {"delta": "int", "reason": "str"},
+                "respect": {"delta": "int", "reason": "str"},
                 "suspicion": {"delta": "int", "reason": "str"},
+                "rapport": {"delta": "int", "reason": "str"},
+                "disclosure_level": {"delta": "int", "reason": "str"},
                 "stress": {"delta": "int", "reason": "str"}
             },
             "current_problem": "str - the problem you currently face (keep or update)",
