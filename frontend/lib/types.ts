@@ -119,9 +119,16 @@ export interface WorldBible {
 
 export type GameState =
   | "plan_elicitation"
+  | "plan_revision"
   | "mission_lobby"
   | "live_mission"
   | "complete";
+
+export interface MissionDebrief {
+  message: string;
+  location: string;
+  who_is_around: string[];
+}
 
 export interface TurnResponse {
   session_id: string;
@@ -129,6 +136,7 @@ export interface TurnResponse {
   game_state: GameState;
   mission_chain: Mission[];
   world?: WorldBible | null;
+  debrief?: MissionDebrief | null;
 }
 
 export interface AudioResponse {

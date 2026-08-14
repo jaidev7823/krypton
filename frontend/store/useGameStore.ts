@@ -1,13 +1,14 @@
 "use client";
 
 import { create } from "zustand";
-import { enterMission, getAudio, nextTurn, startGame } from "@/lib/api";
+import { enterMission, getAudio, nextTurn, revisePlan, startGame } from "@/lib/api";
 import type {
   ChatEntry,
   GameState,
   GameTurnCharacter,
   GameTurnMission,
   Mission,
+  MissionDebrief,
   PlayerSetup,
   Skill,
   TurnResponse,
@@ -23,6 +24,7 @@ interface GameStateStore {
   mission: GameTurnMission | null;
   missionChain: Mission[];
   world: WorldBible | null;
+  debrief: MissionDebrief | null;
   isLoading: boolean;
   error: string | null;
   audioMuted: boolean;
@@ -33,6 +35,7 @@ interface GameStateStore {
   setupPlayer: (p: PlayerSetup) => Promise<void>;
   startMission: () => Promise<void>;
   sendMessage: (text: string) => Promise<void>;
+  submitNewPlan: (planText: string) => Promise<void>;
   selectCharacter: (id: string | null) => void;
   toggleAudio: () => void;
   openCoach: (skill: Skill | null) => void;
@@ -82,6 +85,7 @@ function applyTurn(set: (fn: (s: GameStateStore) => Partial<GameStateStore>) => 
       entries,
       characters: res.turn.characters,
       mission: res.turn.mission,
+      debrief: res.debrief ?? null,
       coachSkill: res.turn.coach ?? null,
     };
   });
@@ -96,6 +100,7 @@ export const useGameStore = create<GameStateStore>((set, get) => ({
   mission: null,
   missionChain: [],
   world: null,
+  debrief: null,
   isLoading: false,
   error: null,
   audioMuted: false,
@@ -147,9 +152,21 @@ export const useGameStore = create<GameStateStore>((set, get) => ({
     }
   },
 
-  selectCharacter: (id) => set({ selectedCharacterId: id }),
+  submitNewPlan: async (planText) => {
+    const { sessionId } = get();
+    if (!sessionId || !planText.trim() || get().isLoading) return;
+    set({ isLoading: true, error: null });
+    try {
+      const res = await revisePlan(sessionId, planText.trim());
+      applyTurn(set, res);
+    } catch (e) {
+      set({ error: e instanceof Error ? e.message : String(e) });
+    } finally {
+      set({ isLoading: false });
+    }
+  },
 
-  toggleAudio: () => set({ audioMuted: !get().audioMuted }),
+  selectCharacter: (id) => set({ selectedCharacterId: id }),  toggleAudio: () => set({ audioMuted: !get().audioMuted }),
 
   openCoach: (skill) => set({ coachSkill: skill }),
 }));

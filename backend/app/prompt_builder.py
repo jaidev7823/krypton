@@ -332,6 +332,8 @@ def build_r2_prompt(
         "Rules:\n"
         "- Speak EXACTLY in your dialogue_style: use your vocab, follow speech_pattern, never say the never_says.\n"
         "- You have a current problem you are facing and a solution you are trying. Think using your problem_solving_framework.\n"
+        "- Your 'memory' in character_bible holds your diary entries about the player. Consult it: if you have met this "
+        "player before, reference what happened last time - the player does NOT get a clean slate, and neither do you.\n"
         "- You decide your own stat changes, purely as YOUR character, based ONLY on what the player actually said and did to you. "
         "Whether the player used a negotiation technique well or badly does NOT dictate how you feel - "
         "a slick technique you see through moves you less than a simple honest statement. "
@@ -441,6 +443,78 @@ def build_r3_prompt(
                 "characters_left": ["ids"],
                 "new_characters_present_for_next_turn": ["ids"]
             }
+        },
+    }
+    return system, user
+
+
+# ---------------------------------------------------------------------------
+# R4: Mission End Director - what a won/lost mission MEANS for the world
+# ---------------------------------------------------------------------------
+
+def build_r4_prompt(
+    outcome: str,
+    mission_context: dict[str, Any],
+    culprit_states: dict[str, Any],
+    r2_outputs: list[dict[str, Any]],
+    player: PlayerSetup,
+    world: WorldBible,
+    conversation: list[dict[str, str]],
+) -> tuple[str, dict]:
+    system = (
+        "You are the Mission End Director for a living world simulation.\n"
+        "Your job: decide what the END of this mission means for the world and for the player. "
+        "You run ONLY when the mission is definitively won or failed - never while it is ongoing.\n"
+        "Rules:\n"
+        "- outcome in your payload is already decided mechanically by the Mission Manager. NEVER change it.\n"
+        "- You speak in the voice of the WORLD, not the player and not a narrator - you state consequences plainly.\n"
+        "- CONSEQUENCES ARE DRIVEN BY THE CHARACTER'S LIVE STATS (culprit_states). For a FAILED mission:\n"
+        "  * If suspicion >= 6 AND trust <= 2 -> severity 'harsh'. The character does not just leave: they act on it, "
+        "e.g. MATSUDA directly reports the player to L. Emit a world_effect that raises the authority figure's "
+        "suspicion of the player (character 'L', stat 'suspicion', positive delta) so the damage follows the player "
+        "into future plans.\n"
+        "  * Otherwise -> severity 'mild'. The character leaves politely ('ok, no problem, I'll go') with no further "
+        "consequence, though the failed relationship is still remembered.\n"
+        "- For a WON mission: the mission's reward is delivered - the character gives up the useful information "
+        "the mission promised. Emit world_effects if the world genuinely changes (e.g. the character now trusts you "
+        "more or shares a secret that raises their disclosure).\n"
+        "- debrief.message is a short note DIRECTLY to the player about what just happened and what it means, e.g. "
+        "'You failed the mission. The rest of the chain no longer makes sense - what will you do now?' "
+        "Set debrief.location to where the player finds themselves now and debrief.who_is_around to the ids of "
+        "characters in that place (the failed character is NOT among them - they already left).\n"
+        "- memory_line is a FIRST-PERSON diary line from the affected character's point of view recording what they "
+        "did now (e.g. 'I told L about this player - I won't trust them.'). Appended to their memory.\n"
+        "- event_log is ONE line for the mission history (e.g. 'M1 lost - MATSUDA reported the player to L.').\n"
+        "- Output ONLY JSON matching the schema exactly. No extra text, no markdown."
+    )
+    user = {
+        "task": f"Resolve the consequences of the {outcome.upper()} mission.",
+        "computed_outcome": outcome,
+        "mission_context": mission_context,
+        "culprit_states": culprit_states,
+        "request_2_outputs": r2_outputs,
+        "player": player.model_dump(mode="json"),
+        "world_lore": world.model_dump(mode="json"),
+        "full_conversation_this_mission": conversation,
+        "output_schema": {
+            "severity": "str - 'mild' or 'harsh' (harsh only when a character's suspicion >= 6 and trust <= 2)",
+            "action": "str - what the character actually does now (leaves politely / reports you to L / shares info on win)",
+            "character": "str - the affected character's bible id (who memory_line is about)",
+            "world_effects": [
+                {
+                    "character": "bible character id whose live stats change permanently",
+                    "stat": "short stat name (trust/familiarity/respect/suspicion/rapport/disclosure_level/stress)",
+                    "delta": "int - permanent change (small, e.g. +-2)",
+                    "reason": "str - why"
+                }
+            ],
+            "debrief": {
+                "message": "str - direct note to the player about what happened and what it means",
+                "location": "str - where the player is now",
+                "who_is_around": ["bible character ids still present nearby (NOT the one who left)"]
+            },
+            "memory_line": "str - first-person diary line from the affected character",
+            "event_log": "str - one line appended to the mission history"
         },
     }
     return system, user

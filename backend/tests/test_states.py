@@ -31,12 +31,13 @@ SQLModel.metadata.create_all(db_module.engine)
 from app import llm_caller, main  # noqa: E402
 from app.types import (  # noqa: E402
     CastProjectionOutput, CharacterBrainOutput, CharacterProjection, CharacterReasoning,
-    Mission, MissionArchitectOutput, NarratorOutput, SkillFeedback, StatChange, StatChanges,
-    TurnRequest,
+    Mission, MissionArchitectOutput, MissionDebrief, MissionEndOutput, NarratorOutput,
+    SkillFeedback, StatChange, StatChanges, TurnRequest, WorldEffect,
 )
 
 CALLS: list[str] = []
 BRAIN_MODE = {"fail": False}
+END_MODE = {"severity": "mild"}
 
 
 def _fake_model(agent):
@@ -121,9 +122,50 @@ def _fake_model(agent):
     raise AssertionError(f"unexpected agent {agent}")
 
 
+def _mission_end_model(user):
+    outcome = user.get("computed_outcome", "ongoing")
+    if outcome == "won":
+        return MissionEndOutput(
+            severity="mild",
+            action="MATSUDA hands over the referral info he promised",
+            character="MATSUDA",
+            world_effects=[WorldEffect(character="MATSUDA", stat="disclosure_level", delta=1,
+                                       reason="Shared the referral after being won over")],
+            debrief=MissionDebrief(message="Matsuda handed over the referral. Your plan moves forward.",
+                                   location="Cafeteria", who_is_around=["MATSUDA"]),
+            memory_line="I shared the referral with Jay - I'm a little warmer to them now.",
+            event_log="M1 won - MATSUDA gave up the referral.",
+        )
+    if END_MODE["severity"] == "harsh":
+        return MissionEndOutput(
+            severity="harsh",
+            action="MATSUDA reports the player to L",
+            character="MATSUDA",
+            world_effects=[WorldEffect(character="L", stat="suspicion", delta=2,
+                                       reason="Matsuda reported the player to L")],
+            debrief=MissionDebrief(
+                message="You failed the mission. Matsuda left in disgust and told L about you. "
+                        "The rest of the chain no longer makes sense - what will you do now?",
+                location="Police lobby", who_is_around=["LIGHT", "RYUK"]),
+            memory_line="I told L about this player - I won't trust them.",
+            event_log="M1 lost - MATSUDA reported the player to L.",
+        )
+    return MissionEndOutput(
+        severity="mild",
+        action="MATSUDA leaves politely",
+        character="MATSUDA",
+        debrief=MissionDebrief(
+            message="You failed the mission. Matsuda said 'ok, no problem' and left. "
+                    "The rest of the chain no longer makes sense - what will you do now?",
+            location="Police lobby", who_is_around=["LIGHT", "RYUK"]),
+        memory_line="I said 'no problem, no hard feelings' and left - it just didn't work out between us.",
+        event_log="M1 lost - MATSUDA left politely.",
+    )
+
+
 def fake_call_json(system, user, response_model, retries=3, agent="default", on_attempt=None):
     CALLS.append(agent)
-    model = _fake_model(agent)
+    model = _mission_end_model(user) if agent == "mission_end" else _fake_model(agent)
     if on_attempt:
         on_attempt(system=system, user_payload=user, raw_response="{}",
                    parsed=model.model_dump(mode="json"), success=True, error="", attempt=1)
@@ -268,6 +310,14 @@ def run_checks():
     check(r.turn.mission.title == "Earn L's attention" and r.turn.mission.status == "lobby",
           "advanced to M2 in lobby")
     check(r.turn.mission.chain_progress == "1/2", "chain progress 1/2")
+    check("mission_end" in CALLS, "R4 ran on mission win (payoff decided)")
+    row = db_module.get_session(sid)
+    check(any("M1 won" in e for e in row.mission_state.get("events", [])),
+          "win payoff logged as a world event")
+    check(row.character_states["MATSUDA"]["stats"]["disclosure_level"] >= 5,
+          "win payoff applied (reward info delivered on top of turn deltas)")
+    check(any("referral" in m for m in row.character_states["MATSUDA"]["memory"]),
+          "R4 memory_line appended to the character's memory")
 
     # enter M2 -> L suspicion needs to drop to 3 (5 -> 4 on turn 1 -> still live)
     r = main._run_turn(TurnRequest(session_id=sid, action="enter_mission", new_player_input=""))
@@ -282,30 +332,73 @@ def run_checks():
                                    new_player_input="hi"))
     check(r.game_state == "plan_elicitation", "no-plan turn stays in elicitation")
 
-    # ---- FAIL PATH: a character who gets frustrated leaves / kicks the player ----
+    # ---- FAIL PATH (HARSH): the character reports the player -> plan flops ----
     r = main._run_turn(TurnRequest(player_setup=json.loads(json.dumps(setup_json())),
                                    new_player_input="", action="start"))
-    fail_sid = r.session_id
-    main._run_turn(TurnRequest(session_id=fail_sid, action="submit_plan",
+    harsh_sid = r.session_id
+    main._run_turn(TurnRequest(session_id=harsh_sid, action="submit_plan",
                                plan_text="Get close to Matsuda"))
-    main._run_turn(TurnRequest(session_id=fail_sid, action="enter_mission", new_player_input=""))
+    main._run_turn(TurnRequest(session_id=harsh_sid, action="enter_mission", new_player_input=""))
     CALLS.clear()
     BRAIN_MODE["fail"] = True
-    r = main._run_turn(TurnRequest(session_id=fail_sid, new_player_input="Rude outburst"))
+    END_MODE["severity"] = "harsh"
+    r = main._run_turn(TurnRequest(session_id=harsh_sid, new_player_input="Rude outburst"))
     BRAIN_MODE["fail"] = False
-    check(r.game_state == "mission_lobby", "frustrated character -> mission failed, back to lobby")
-    check(r.turn.mission.status == "failed", "failed mission reported with status 'failed'")
-    row = db_module.get_session(fail_sid)
-    check(row.mission_state["current"]["status"] == "failed",
-          "persisted current mission marked failed (retry not auto-advanced)")
+    check(r.game_state == "plan_revision", "failed mission -> plan_revision (not a retry lobby)")
+    check(r.debrief is not None and "what will you do now" in r.debrief.message,
+          "failure debrief asks the player for a new plan")
+    check("mission_end" in CALLS, "R4 ran on mission failure")
+    row = db_module.get_session(harsh_sid)
+    check(row.mission_state.get("plan_flopped") is True,
+          "plan marked as flopped (chain voided)")
+    check(row.mission_state.get("current") is None and row.mission_state.get("chain") == [],
+          "failed chain cleared - remaining missions no longer apply")
+    check(any("reported" in e for e in row.mission_state.get("events", [])),
+          "harsh consequence logged as a world event")
+    check(row.character_states["L"]["stats"]["suspicion_towards_player"] == 7,
+          "harsh consequence: L suspicion raised by 2 (Matsuda reported you)")
     check(row.character_states["MATSUDA"]["stats"]["trust_towards_player"] == 0,
-          "trust cratered (4 - 4) - the damage persists for the retry")
-    check(any("left" in m for m in row.character_states["MATSUDA"]["memory"]),
-          "leaving character updates memory with the reason they left")
-    # retry: re-entering the failed mission works and reactivates it
-    r = main._run_turn(TurnRequest(session_id=fail_sid, action="enter_mission", new_player_input=""))
-    check(r.game_state == "live_mission" and r.turn.mission.status == "active",
-          "failed mission can be re-entered (status -> active)")
+          "trust cratered (4 - 4) - the damage persists")
+    check(any("I told L" in m for m in row.character_states["MATSUDA"]["memory"]),
+          "R4 memory_line appended (character reported you)")
+    present = [cid for cid, s in row.character_states.items() if s.get("present")]
+    check(present == ["LIGHT", "RYUK"] and not row.character_states["MATSUDA"]["present"],
+          "presence synced to debrief: Matsuda left, others around")
+
+    # PLAN REVISION: a new plan rebuilds the chain WITHOUT resetting the cast
+    CALLS.clear()
+    r = main._run_turn(TurnRequest(session_id=harsh_sid, action="submit_plan",
+                                   plan_text="Repair Matsuda's trust before touching L"))
+    check(r.game_state == "mission_lobby", "revised plan -> mission lobby")
+    check(CALLS == ["mission_architect"],
+          f"revision skips cast re-projection - stats/memory survive (calls={CALLS})")
+    check(len(r.mission_chain) == 2, "revised plan built a fresh mission chain")
+    row = db_module.get_session(harsh_sid)
+    check(row.mission_state.get("plan_flopped") is False, "plan_flopped cleared after revision")
+    check(row.character_states["MATSUDA"]["stats"]["trust_towards_player"] == 0,
+          "Matsuda STILL distrusts the player after revision (no reset)")
+    check(any("I told L" in m for m in row.character_states["MATSUDA"]["memory"]),
+          "Matsuda's memory survives into the new plan")
+    r = main._run_turn(TurnRequest(session_id=harsh_sid, action="enter_mission", new_player_input=""))
+    check(r.game_state == "live_mission", "revised plan -> new mission entered")
+
+    # ---- FAIL PATH (MILD): polite leave, no permanent world damage ----
+    r = main._run_turn(TurnRequest(player_setup=json.loads(json.dumps(setup_json())),
+                                   new_player_input="", action="start"))
+    mild_sid = r.session_id
+    main._run_turn(TurnRequest(session_id=mild_sid, action="submit_plan",
+                               plan_text="Get close to Matsuda"))
+    main._run_turn(TurnRequest(session_id=mild_sid, action="enter_mission", new_player_input=""))
+    END_MODE["severity"] = "mild"
+    BRAIN_MODE["fail"] = True
+    r = main._run_turn(TurnRequest(session_id=mild_sid, new_player_input="Rude outburst"))
+    BRAIN_MODE["fail"] = False
+    row = db_module.get_session(mild_sid)
+    check(r.game_state == "plan_revision", "mild failure also -> plan_revision")
+    check(row.character_states["L"]["stats"]["suspicion_towards_player"] == 5,
+          "mild consequence: L suspicion unchanged (no report to L)")
+    check(any("no problem" in m for m in row.character_states["MATSUDA"]["memory"]),
+          "mild consequence: character leaves politely (memory records it)")
 
     print("\nALL STATE CHECKS PASSED")
 

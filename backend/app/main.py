@@ -30,6 +30,7 @@ from .prompt_builder import (
     build_r1_prompt,
     build_r2_prompt,
     build_r3_prompt,
+    build_r4_prompt,
 )
 from .types import (
     CastProjectionOutput,
@@ -39,6 +40,8 @@ from .types import (
     GameTurnNarration,
     Mission,
     MissionArchitectOutput,
+    MissionDebrief,
+    MissionEndOutput,
     NarratorOutput,
     PlayerSetup,
     SkillBible,
@@ -226,6 +229,30 @@ def mission_outcome(mission: dict, character_states: dict, r3_won: bool) -> str:
     return "won" if r3_won else "ongoing"
 
 
+def _outcome_culprits(mission: dict, character_states: dict) -> list[str]:
+    """Which characters tripped a fail condition (i.e. are the reason the mission failed)."""
+    culprits = []
+    for cond in mission.get("fail_conditions") or []:
+        cid = cond.get("character")
+        if cid and _condition_met(cond, character_states) and cid not in culprits:
+            culprits.append(cid)
+    return culprits
+
+
+def apply_world_effects(character_states: dict, effects) -> None:
+    """Persist R4's permanent stat changes into the world (outlive the mission)."""
+    for fx in effects:
+        c = character_states.get(fx.character)
+        if not c:
+            continue
+        canonical = STAT_KEY_MAP.get(fx.stat)
+        if not canonical:
+            continue
+        stats = c["stats"]
+        stats[canonical] = max(0, min(10, stats.get(canonical, 0) + (fx.delta or 0)))
+    return None
+
+
 def apply_mission_state(mission_state: dict, r3: NarratorOutput) -> bool:
     """Advance the fixed mission chain. The caller has already decided the
     mission was won via the deterministic stat thresholds (mission_outcome);
@@ -331,6 +358,27 @@ def _run_turn(body: TurnRequest) -> TurnResponse:
     on_attempt = _make_agent_logger(row.id, 0)
 
     # ------------------------------------------------------------------
+    # STATE 0: previous plan FLOOPED -> the player must propose a new one.
+    # The cast is NOT re-projected - stats and memories survive the flop.
+    # ------------------------------------------------------------------
+    if mission_state.get("plan_flopped") and not mission_state.get("chain"):
+        if action == "submit_plan":
+            plan = (body.plan_text or "").strip()
+            if not plan:
+                raise HTTPException(400, "plan_text required for submit_plan")
+            player.own_plan = plan
+            update_player_setup(row.id, player.model_dump(mode="json"))
+            mission_state["plan_flopped"] = False
+            mission_state["events"] = mission_state.get("events") or []
+            mission_state = _build_mission_chain(
+                player, world, mission_state, character_states,
+                on_attempt=on_attempt, reproject=False,
+            )
+            save_session_state(row.id, mission_state, character_states, conversation)
+            return _lobby_response(row.id, mission_state, player, world)
+        return _plan_revision_response(row.id, mission_state, player, world)
+
+    # ------------------------------------------------------------------
     # STATE 1: no plan yet -> elicit it. NO LLM.
     # ------------------------------------------------------------------
     if not own_plan:
@@ -427,9 +475,16 @@ def _build_mission_chain(
     mission_state: dict,
     character_states: dict,
     on_attempt=None,
+    reproject: bool = True,
 ) -> dict:
-    """STATE 2 - project the cast (R0-Cast), then run the Mission Architect (R0)."""
-    _run_cast_projection(player, world, character_states, on_attempt=on_attempt)
+    """STATE 2 - project the cast (R0-Cast), then run the Mission Architect (R0).
+
+    reproject=False is used when the player revises a failed plan: the cast is
+    NOT reset - live stats and memories survive so characters remember the
+    player and the world keeps its damage.
+    """
+    if reproject:
+        _run_cast_projection(player, world, character_states, on_attempt=on_attempt)
     r0_system, r0_user = build_r0_prompt(player, world, character_states)
     r0 = llm_caller.call_json(
         r0_system, r0_user, MissionArchitectOutput,
@@ -488,6 +543,40 @@ def _lobby_response(session_id: str, mission_state: dict, player: PlayerSetup, w
     chain = mission_state.get("chain") or []
     return TurnResponse(session_id=session_id, turn=turn, game_state="mission_lobby",
                         mission_chain=[Mission.model_validate(m) for m in chain], world=world)
+
+
+def _plan_revision_response(
+    session_id: str, mission_state: dict, player: PlayerSetup, world: WorldBible
+) -> TurnResponse:
+    """STATE: the previous plan flopped - the player must propose a new one.
+
+    Nothing is reset: live stats, memories and the failure debrief all survive.
+    """
+    debrief = mission_state.get("plan_flop_debrief") or {}
+    message = (
+        debrief.get("message")
+        or "Your plan fell apart. Where do you go from here? What is your new plan?"
+    )
+    where = debrief.get("location") or ""
+    around = debrief.get("who_is_around") or []
+    location = (f" You're at {where}." if where else "") or " You're back where the plan broke down."
+    around_txt = f" Nearby: {', '.join(around)}." if around else ""
+    events = mission_state.get("events") or []
+    if events:
+        around_txt += f"\nWhat happened: {' '.join(events[-2:])}"
+    narration = message + location + around_txt
+    turn = _mission_turn(
+        0, {"chain": [], "current": None, "history": mission_state.get("history") or []},
+        narration,
+    )
+    return TurnResponse(
+        session_id=session_id,
+        turn=turn,
+        game_state="plan_revision",
+        mission_chain=[],
+        world=world,
+        debrief=MissionDebrief(message=message, location=where, who_is_around=around),
+    )
 
 
 def _live_response(session_id: str, mission_state: dict, player: PlayerSetup) -> TurnResponse:
@@ -594,10 +683,43 @@ def _run_live_turn(
         r3_system, r3_user, NarratorOutput, agent="narrator", on_attempt=on_attempt("narrator")
     )
 
+    # R4 - Mission End Director: what the end MEANS for the world.
+    # Runs only when the mission is definitively won or failed.
+    r4: MissionEndOutput | None = None
+    if outcome in ("won", "failed"):
+        culprits = _outcome_culprits(current, character_states) if outcome == "failed" else []
+        culprit_states = {cid: character_states.get(cid) for cid in culprits}
+        r4_system, r4_user = build_r4_prompt(
+            outcome=outcome,
+            mission_context=mctx,
+            culprit_states=culprit_states,
+            r2_outputs=[o.model_dump(mode="json") for o in r2_outputs],
+            player=player,
+            world=world,
+            conversation=turn_conversation,
+        )
+        r4 = llm_caller.call_json(
+            r4_system, r4_user, MissionEndOutput,
+            agent="mission_end", on_attempt=on_attempt("mission_end"),
+        )
+        apply_world_effects(character_states, r4.world_effects)
+        if r4.character in character_states and r4.memory_line.strip():
+            character_states[r4.character]["memory"].append(r4.memory_line.strip())
+        if r4.event_log.strip():
+            mission_state.setdefault("events", []).append(r4.event_log.strip())
+
     if outcome == "won":
         apply_mission_state(mission_state, r3)
     elif outcome == "failed":
-        current["status"] = "failed"
+        # PLAN FLOP: the whole chain is void - the world keeps the damage and
+        # the player must propose a new plan. Memory + stats survive.
+        mission_state["plan_flopped"] = True
+        mission_state["plan_flop_debrief"] = r4.debrief.model_dump(mode="json")
+        around = [c for c in (r4.debrief.who_is_around or []) if c in character_states]
+        _sync_presence(character_states, around)
+        mission_state["chain"] = []
+        mission_state["current"] = None
+
     for msg in [{"speaker": "PLAYER", "text": body.new_player_input}]:
         conversation.append(msg)
     for out in r2_outputs:
@@ -615,6 +737,10 @@ def _run_live_turn(
         mission_state=mission_state.get("current"),
         chain_progress=chain_progress(mission_state),
     )
+    if r4 and r4.debrief.message.strip():
+        game_turn.narration.text = (
+            f"{game_turn.narration.text}\n\n{r4.debrief.message.strip()}"
+        )
 
     save_session_state(row.id, mission_state, character_states, conversation)
     db.log_turn(
@@ -631,13 +757,16 @@ def _run_live_turn(
 
     if outcome == "won":
         game_state = "complete" if mission_state.get("current") is None else "mission_lobby"
+        debrief = r4.debrief if r4 else None
     elif outcome == "failed":
-        game_state = "mission_lobby"
+        game_state = "plan_revision"
+        debrief = r4.debrief if r4 else None
     else:
         game_state = "live_mission"
+        debrief = None
 
     return TurnResponse(session_id=row.id, turn=game_turn, game_state=game_state,
-                        mission_chain=mission_state.get("chain") or [])
+                        mission_chain=mission_state.get("chain") or [], debrief=debrief)
 
 
 @app.post("/api/turn", response_model=TurnResponse)

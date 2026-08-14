@@ -222,6 +222,30 @@ class NarratorOutput(PermissiveModel):
     scene_update: SceneUpdate = Field(default_factory=SceneUpdate)
 
 
+class WorldEffect(PermissiveModel):
+    character: str
+    stat: str = "trust"
+    delta: int = 0
+    reason: str = ""
+
+
+class MissionDebrief(PermissiveModel):
+    message: str = ""
+    location: str = ""
+    who_is_around: list[str] = Field(default_factory=list)
+
+
+class MissionEndOutput(PermissiveModel):
+    """R4 - what a won/failed mission MEANS for the world (consequences)."""
+    severity: str = "mild"
+    action: str = ""
+    character: str = ""
+    world_effects: list[WorldEffect] = Field(default_factory=list)
+    debrief: MissionDebrief = Field(default_factory=MissionDebrief)
+    memory_line: str = ""
+    event_log: str = ""
+
+
 # ---------------------------------------------------------------------------
 # Piece 4: Mission state persisted per session
 # ---------------------------------------------------------------------------
@@ -332,6 +356,7 @@ class TurnRequest(PermissiveModel):
 class TurnResponse(PermissiveModel):
     session_id: str
     turn: GameTurn
-    game_state: str = ""  # plan_elicitation | mission_lobby | live_mission | complete
+    game_state: str = ""  # plan_elicitation | plan_revision | mission_lobby | live_mission | complete
     mission_chain: list[Mission] = Field(default_factory=list)
     world: Optional[WorldBible] = None
+    debrief: Optional[MissionDebrief] = None

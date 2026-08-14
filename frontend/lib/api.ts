@@ -32,6 +32,15 @@ export function enterMission(sessionId: string): Promise<TurnResponse> {
   });
 }
 
+export function revisePlan(sessionId: string, planText: string): Promise<TurnResponse> {
+  return post<TurnResponse>("/api/turn", {
+    session_id: sessionId,
+    action: "submit_plan",
+    plan_text: planText,
+    new_player_input: "",
+  });
+}
+
 export function nextTurn(sessionId: string, input: string): Promise<TurnResponse> {
   return post<TurnResponse>("/api/turn", { session_id: sessionId, new_player_input: input });
 }
