@@ -2,6 +2,7 @@
 
 import { motion } from "framer-motion";
 import { useGameStore } from "@/store/useGameStore";
+import { LastExchange } from "./LastExchange";
 
 export function MissionLobbyScreen() {
   const mission = useGameStore((s) => s.mission);
@@ -24,6 +25,8 @@ export function MissionLobbyScreen() {
             {recap.text}
           </motion.div>
         )}
+
+        <LastExchange />
 
         <motion.div
           initial={{ opacity: 0, y: 12 }}

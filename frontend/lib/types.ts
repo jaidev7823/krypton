@@ -17,6 +17,7 @@ export interface GameTurnMessage {
   audio_path?: string | null;
   inner_thought?: string | null;
   skill_feedback?: SkillFeedback | null;
+  stat_deltas?: Record<string, number>;
 }
 
 export interface GameTurnCharacter {
@@ -33,6 +34,13 @@ export interface GameTurnCharacter {
   present: boolean;
 }
 
+export interface WinCondition {
+  character: string;
+  stat: string;
+  min?: number;
+  max?: number;
+}
+
 export interface GameTurnMission {
   id: number;
   title: string;
@@ -44,6 +52,7 @@ export interface GameTurnMission {
   characters: string[];
   objective: string;
   reward: string;
+  win_conditions: WinCondition[];
 }
 
 export interface GameTurnNarration {
@@ -137,6 +146,7 @@ export interface TurnResponse {
   mission_chain: Mission[];
   world?: WorldBible | null;
   debrief?: MissionDebrief | null;
+  events?: string[];
 }
 
 export interface AudioResponse {
@@ -149,4 +159,21 @@ export interface AudioResponse {
 // Normalized chat entry used by the UI
 export type ChatEntry =
   | { kind: "narration"; id: string; text: string; where: string; why_here: string }
-  | { kind: "message"; id: string; speaker: string; text: string; inner_thought?: string | null; skill_feedback?: SkillFeedback | null };
+  | {
+      kind: "message";
+      id: string;
+      speaker: string;
+      text: string;
+      inner_thought?: string | null;
+      skill_feedback?: SkillFeedback | null;
+      stat_deltas?: Record<string, number>;
+      pending?: boolean;
+    };
+
+export interface CoachNotice {
+  id: string;
+  ok: boolean;
+  concepts: string;
+  text: string;
+  player: string;
+}

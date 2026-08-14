@@ -38,6 +38,7 @@ from app.types import (  # noqa: E402
 CALLS: list[str] = []
 BRAIN_MODE = {"fail": False}
 END_MODE = {"severity": "mild"}
+NARRATOR_LEAVE_ALL = {"on": False}
 
 
 def _fake_model(agent):
@@ -115,10 +116,12 @@ def _fake_model(agent):
             ),
         )
     if agent == "narrator":
+        scene_update = {"characters_left": ["MATSUDA"]} if NARRATOR_LEAVE_ALL["on"] else {}
         return NarratorOutput(narration="The cafeteria hums.",
                               where="Cafeteria",
                               why_here="Mission in progress",
-                              mission_status={"current_mission_won": True})
+                              mission_status={"current_mission_won": True},
+                              scene_update=scene_update)
     raise AssertionError(f"unexpected agent {agent}")
 
 
@@ -133,7 +136,7 @@ def _mission_end_model(user):
                                        reason="Shared the referral after being won over")],
             debrief=MissionDebrief(message="Matsuda handed over the referral. Your plan moves forward.",
                                    location="Cafeteria", who_is_around=["MATSUDA"]),
-            memory_line="I shared the referral with Jay - I'm a little warmer to them now.",
+            memory="A stranger kept pressing me for the referral - tonight he won me over and I shared it. I'm a little warmer to them now.",
             event_log="M1 won - MATSUDA gave up the referral.",
         )
     if END_MODE["severity"] == "harsh":
@@ -147,7 +150,7 @@ def _mission_end_model(user):
                 message="You failed the mission. Matsuda left in disgust and told L about you. "
                         "The rest of the chain no longer makes sense - what will you do now?",
                 location="Police lobby", who_is_around=["LIGHT", "RYUK"]),
-            memory_line="I told L about this player - I won't trust them.",
+            memory="This player pushed too hard and I don't trust them - I told L about him and I won't hear him out again.",
             event_log="M1 lost - MATSUDA reported the player to L.",
         )
     return MissionEndOutput(
@@ -158,7 +161,7 @@ def _mission_end_model(user):
             message="You failed the mission. Matsuda said 'ok, no problem' and left. "
                     "The rest of the chain no longer makes sense - what will you do now?",
             location="Police lobby", who_is_around=["LIGHT", "RYUK"]),
-        memory_line="I said 'no problem, no hard feelings' and left - it just didn't work out between us.",
+        memory="I said 'no problem, no hard feelings' and left - it just didn't work out between us, and I'd rather not reopen it.",
         event_log="M1 lost - MATSUDA left politely.",
     )
 
@@ -316,8 +319,9 @@ def run_checks():
           "win payoff logged as a world event")
     check(row.character_states["MATSUDA"]["stats"]["disclosure_level"] >= 5,
           "win payoff applied (reward info delivered on top of turn deltas)")
-    check(any("referral" in m for m in row.character_states["MATSUDA"]["memory"]),
-          "R4 memory_line appended to the character's memory")
+    mem = row.character_states["MATSUDA"]["memory"]
+    check(len(mem) == 1 and "referral" in mem[0],
+          "R4 rewrites MATSUDA memory into one merged summary (win payoff folded in)")
 
     # enter M2 -> L suspicion needs to drop to 3 (5 -> 4 on turn 1 -> still live)
     r = main._run_turn(TurnRequest(session_id=sid, action="enter_mission", new_player_input=""))
@@ -359,8 +363,9 @@ def run_checks():
           "harsh consequence: L suspicion raised by 2 (Matsuda reported you)")
     check(row.character_states["MATSUDA"]["stats"]["trust_towards_player"] == 0,
           "trust cratered (4 - 4) - the damage persists")
-    check(any("I told L" in m for m in row.character_states["MATSUDA"]["memory"]),
-          "R4 memory_line appended (character reported you)")
+    mem = row.character_states["MATSUDA"]["memory"]
+    check(len(mem) == 1 and "I told L" in mem[0],
+          "R4 rewrites Matsuda memory into ONE merged summary (reported you)")
     present = [cid for cid, s in row.character_states.items() if s.get("present")]
     check(present == ["LIGHT", "RYUK"] and not row.character_states["MATSUDA"]["present"],
           "presence synced to debrief: Matsuda left, others around")
@@ -377,8 +382,9 @@ def run_checks():
     check(row.mission_state.get("plan_flopped") is False, "plan_flopped cleared after revision")
     check(row.character_states["MATSUDA"]["stats"]["trust_towards_player"] == 0,
           "Matsuda STILL distrusts the player after revision (no reset)")
-    check(any("I told L" in m for m in row.character_states["MATSUDA"]["memory"]),
-          "Matsuda's memory survives into the new plan")
+    mem = row.character_states["MATSUDA"]["memory"]
+    check(len(mem) == 1 and "I told L" in mem[0],
+          "Matsuda's rewritten memory survives into the new plan")
     r = main._run_turn(TurnRequest(session_id=harsh_sid, action="enter_mission", new_player_input=""))
     check(r.game_state == "live_mission", "revised plan -> new mission entered")
 
@@ -399,6 +405,28 @@ def run_checks():
           "mild consequence: L suspicion unchanged (no report to L)")
     check(any("no problem" in m for m in row.character_states["MATSUDA"]["memory"]),
           "mild consequence: character leaves politely (memory records it)")
+
+    # ---- EMPTY ROOM: everyone in the cast left -> mission ends as a failure ----
+    # The narrator reports the sole cast member leaving. Even though the stats
+    # say the mission is still winnable, no one is there to talk to.
+    r = main._run_turn(TurnRequest(player_setup=json.loads(json.dumps(setup_json())),
+                                   new_player_input="", action="start"))
+    empty_sid = r.session_id
+    main._run_turn(TurnRequest(session_id=empty_sid, action="submit_plan",
+                               plan_text="Get close to Matsuda"))
+    main._run_turn(TurnRequest(session_id=empty_sid, action="enter_mission", new_player_input=""))
+    NARRATOR_LEAVE_ALL["on"] = True
+    r = main._run_turn(TurnRequest(session_id=empty_sid, new_player_input="Hello"))
+    NARRATOR_LEAVE_ALL["on"] = False
+    check(r.game_state == "plan_revision",
+          "all cast left -> empty room forces the mission to fail")
+    check("mission_end" in CALLS, "R4 resolves the empty-room failure")
+    row = db_module.get_session(empty_sid)
+    check(row.mission_state.get("plan_flopped") is True,
+          "empty-room failure flops the plan like any other failure")
+    present = [cid for cid, s in row.character_states.items() if s.get("present")]
+    check(present == ["LIGHT", "RYUK"],
+          "presence synced after empty room (Matsuda gone, others around)")
 
     print("\nALL STATE CHECKS PASSED")
 

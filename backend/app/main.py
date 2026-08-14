@@ -158,6 +158,7 @@ def mission_context(mission_state: dict, scene: dict) -> dict:
     return {
         "current_mission": mission_state.get("current"),
         "old_missions_summary": mission_state.get("history", []),
+        "events": mission_state.get("events") or [],
         "scene": scene,
     }
 
@@ -191,7 +192,7 @@ def apply_r2(state: dict, out: CharacterBrainOutput) -> None:
     if out.problem_solving_framework.strip():
         char["problem_solving_framework"] = out.problem_solving_framework
     if out.memory.strip():
-        char["memory"].append(out.memory.strip())
+        char["memory"] = [out.memory.strip()]
 
 
 def chain_progress(mission_state: dict) -> str:
@@ -524,7 +525,8 @@ def _plan_response(session_id: str, player: PlayerSetup, world: WorldBible) -> T
     turn = _mission_turn(0, {"chain": [], "current": None, "history": []},
                          "Define your plan. The world will wait.")
     return TurnResponse(session_id=session_id, turn=turn,
-                        game_state="plan_elicitation", mission_chain=[], world=world)
+                        game_state="plan_elicitation", mission_chain=[], world=world,
+                        events=[])
 
 
 def _lobby_response(session_id: str, mission_state: dict, player: PlayerSetup, world: WorldBible) -> TurnResponse:
@@ -542,7 +544,8 @@ def _lobby_response(session_id: str, mission_state: dict, player: PlayerSetup, w
     turn = _mission_turn(0, mission_state, narration)
     chain = mission_state.get("chain") or []
     return TurnResponse(session_id=session_id, turn=turn, game_state="mission_lobby",
-                        mission_chain=[Mission.model_validate(m) for m in chain], world=world)
+                        mission_chain=[Mission.model_validate(m) for m in chain], world=world,
+                        events=mission_state.get("events") or [])
 
 
 def _plan_revision_response(
@@ -576,6 +579,7 @@ def _plan_revision_response(
         mission_chain=[],
         world=world,
         debrief=MissionDebrief(message=message, location=where, who_is_around=around),
+        events=mission_state.get("events") or [],
     )
 
 
@@ -587,7 +591,8 @@ def _live_response(session_id: str, mission_state: dict, player: PlayerSetup) ->
     )
     turn = _mission_turn(0, mission_state, narration)
     return TurnResponse(session_id=session_id, turn=turn, game_state="live_mission",
-                        mission_chain=mission_state.get("chain") or [])
+                        mission_chain=mission_state.get("chain") or [],
+                        events=mission_state.get("events") or [])
 
 
 def _complete_response(session_id: str, mission_state: dict, player: PlayerSetup) -> TurnResponse:
@@ -596,7 +601,8 @@ def _complete_response(session_id: str, mission_state: dict, player: PlayerSetup
         "All missions complete. Your plan is fulfilled - the world remembers what you did.",
     )
     return TurnResponse(session_id=session_id, turn=turn, game_state="complete",
-                        mission_chain=mission_state.get("chain") or [])
+                        mission_chain=mission_state.get("chain") or [],
+                        events=mission_state.get("events") or [])
 
 
 def _run_live_turn(
@@ -683,6 +689,14 @@ def _run_live_turn(
         r3_system, r3_user, NarratorOutput, agent="narrator", on_attempt=on_attempt("narrator")
     )
 
+    # If EVERYONE in the mission cast left, the room is empty and no further
+    # conversation can happen - the mission is over, regardless of stats.
+    # R3 only reports who left; the emptiness itself is a mechanical verdict.
+    if outcome != "won" and present_ids:
+        left = set(r3.scene_update.characters_left or [])
+        if all(cid in left for cid in present_ids):
+            outcome = "failed"
+
     # R4 - Mission End Director: what the end MEANS for the world.
     # Runs only when the mission is definitively won or failed.
     r4: MissionEndOutput | None = None
@@ -703,8 +717,8 @@ def _run_live_turn(
             agent="mission_end", on_attempt=on_attempt("mission_end"),
         )
         apply_world_effects(character_states, r4.world_effects)
-        if r4.character in character_states and r4.memory_line.strip():
-            character_states[r4.character]["memory"].append(r4.memory_line.strip())
+        if r4.character in character_states and r4.memory.strip():
+            character_states[r4.character]["memory"] = [r4.memory.strip()]
         if r4.event_log.strip():
             mission_state.setdefault("events", []).append(r4.event_log.strip())
 
@@ -766,7 +780,8 @@ def _run_live_turn(
         debrief = None
 
     return TurnResponse(session_id=row.id, turn=game_turn, game_state=game_state,
-                        mission_chain=mission_state.get("chain") or [], debrief=debrief)
+                        mission_chain=mission_state.get("chain") or [], debrief=debrief,
+                        events=mission_state.get("events") or [])
 
 
 @app.post("/api/turn", response_model=TurnResponse)

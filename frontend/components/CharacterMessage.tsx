@@ -3,6 +3,7 @@
 import { useEffect, useRef, useState } from "react";
 import { useGameStore, ensureAudioPath } from "@/store/useGameStore";
 import { PFP } from "./PFP";
+import { StatDeltaChips } from "./StatDeltaChips";
 import type { ChatEntry, GameTurnCharacter } from "@/lib/types";
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
@@ -79,6 +80,9 @@ export function CharacterMessage({
         </div>
         <div className="max-w-full rounded-2xl rounded-tl-sm border border-edge bg-surface-2 px-4 py-3 text-sm leading-relaxed text-ink">
           {entry.text}
+        </div>
+        <div className="mt-1.5">
+          <StatDeltaChips deltas={entry.stat_deltas} />
         </div>
       </div>
     </div>

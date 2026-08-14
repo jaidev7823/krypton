@@ -332,20 +332,19 @@ def build_r2_prompt(
         "Rules:\n"
         "- Speak EXACTLY in your dialogue_style: use your vocab, follow speech_pattern, never say the never_says.\n"
         "- You have a current problem you are facing and a solution you are trying. Think using your problem_solving_framework.\n"
-        "- Your 'memory' in character_bible holds your diary entries about the player. Consult it: if you have met this "
-        "player before, reference what happened last time - the player does NOT get a clean slate, and neither do you.\n"
+        "- Your 'memory' in character_bible is your RUNNING MEMORY about the player - always a compact FIRST-PERSON "
+        "summary, never a transcript. Rewrite it into a NEW summary that MERGES what you already remembered with what "
+        "just happened now. Example: 'Last time we met I left because he kept pressing about the case. Today he came "
+        "back apologetic - I already told L about him, but I'm willing to hear him out.' Include what happened before, "
+        "what is happening now, and how you feel. Keep it under ~120 words. If world_events contains an event involving "
+        "you, it is an unchangeable fact (e.g. if it says you already called the police, you DID - you may only respond "
+        "to it, never deny it); fold it into your memory.\n"
         "- You decide your own stat changes, purely as YOUR character, based ONLY on what the player actually said and did to you. "
         "Whether the player used a negotiation technique well or badly does NOT dictate how you feel - "
         "a slick technique you see through moves you less than a simple honest statement. "
         "Move trust/familiarity/respect/suspicion/rapport/disclosure/stress only if the player's words genuinely affect how you feel about them.\n"
         "- Stats live on a 0-10 scale (0 = none, 10 = max). Deltas are small integers, typically -2..+2.\n"
         "- inner_thought is private and never spoken - it reflects how your problem_solving_framework interprets this exchange.\n"
-        "- memory is a short FIRST-PERSON narrative line you write in YOUR OWN voice, like a diary entry - it records what "
-        "just happened with the player and how you feel about them now. It is NOT a transcript and never quotes your "
-        "dialogue. Examples: 'A stranger came up to me in the lobby and said hi - I answered politely, we're still talking, "
-        "I'm keeping my guard up.' / 'He pushed me for answers I won't give, that put me on edge.' If you END or LEAVE the "
-        "conversation this turn, the memory must say you left and why: 'I left because he kept pressing about the case and "
-        "I didn't trust him.'\n"
         "- If this exchange changes your problem or solution, update current_problem and solution.\n"
         "- Never break character. Never mention you are AI.\n"
         "- Output ONLY JSON matching the schema exactly.\n"
@@ -365,6 +364,7 @@ def build_r2_prompt(
         "character_bible": character,
         "full_conversation_this_mission": conversation,
         "new_player_input": new_player_input,
+        "world_events": mission_context.get("events") or [],
         "output_schema": {
             "character_id": "your id",
             "reasoning": {
@@ -377,7 +377,7 @@ def build_r2_prompt(
             },
             "inner_thought": "str - private thought",
             "dialogue": "str - what you say out loud",
-            "memory": "str - first-person narrative diary line about what just happened and how you feel now (never quote your dialogue); if you leave, say you left and why",
+            "memory": "str - your REWRITTEN running memory: merge what you already remembered with what just happened now into one compact first-person summary (<~120 words); never deny world_events facts; if you leave, the summary must record it and why",
             "stat_changes": {
                 "trust": {"delta": "int", "reason": "str"},
                 "familiarity": {"delta": "int", "reason": "str"},
@@ -482,9 +482,11 @@ def build_r4_prompt(
         "'You failed the mission. The rest of the chain no longer makes sense - what will you do now?' "
         "Set debrief.location to where the player finds themselves now and debrief.who_is_around to the ids of "
         "characters in that place (the failed character is NOT among them - they already left).\n"
-        "- memory_line is a FIRST-PERSON diary line from the affected character's point of view recording what they "
-        "did now (e.g. 'I told L about this player - I won't trust them.'). Appended to their memory.\n"
-        "- event_log is ONE line for the mission history (e.g. 'M1 lost - MATSUDA reported the player to L.').\n"
+        "- memory is the affected character's REWRITTEN running memory: merge their prior memory (see culprit_states) "
+        "with what they just did into ONE compact first-person summary (e.g. 'I already told L about this player - I "
+        "won't trust them, but he keeps trying.'). It REPLACES the old memory - keep everything important, under ~120 words.\n"
+        "- event_log is ONE line for the world events log (e.g. 'M1 lost - MATSUDA reported the player to L.'). It is a "
+        "PERMANENT, undeniable fact that characters must treat as true from now on.\n"
         "- Output ONLY JSON matching the schema exactly. No extra text, no markdown."
     )
     user = {
@@ -499,7 +501,7 @@ def build_r4_prompt(
         "output_schema": {
             "severity": "str - 'mild' or 'harsh' (harsh only when a character's suspicion >= 6 and trust <= 2)",
             "action": "str - what the character actually does now (leaves politely / reports you to L / shares info on win)",
-            "character": "str - the affected character's bible id (who memory_line is about)",
+            "character": "str - the affected character's bible id (who memory is about)",
             "world_effects": [
                 {
                     "character": "bible character id whose live stats change permanently",
@@ -513,8 +515,8 @@ def build_r4_prompt(
                 "location": "str - where the player is now",
                 "who_is_around": ["bible character ids still present nearby (NOT the one who left)"]
             },
-            "memory_line": "str - first-person diary line from the affected character",
-            "event_log": "str - one line appended to the mission history"
+            "memory": "str - the affected character's REWRITTEN running memory (prior memory + what they just did, merged; replaces the old memory)",
+            "event_log": "str - one line for the permanent world events log"
         },
     }
     return system, user

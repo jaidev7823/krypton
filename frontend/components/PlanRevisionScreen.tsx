@@ -2,6 +2,7 @@
 
 import { motion } from "framer-motion";
 import { useGameStore } from "@/store/useGameStore";
+import { LastExchange } from "./LastExchange";
 
 export function PlanRevisionScreen() {
   const debrief = useGameStore((s) => s.debrief);
@@ -53,6 +54,8 @@ export function PlanRevisionScreen() {
             {recap.text}
           </motion.div>
         )}
+
+        <LastExchange />
 
         <motion.form
           initial={{ opacity: 0, y: 12 }}

@@ -242,7 +242,7 @@ class MissionEndOutput(PermissiveModel):
     character: str = ""
     world_effects: list[WorldEffect] = Field(default_factory=list)
     debrief: MissionDebrief = Field(default_factory=MissionDebrief)
-    memory_line: str = ""
+    memory: str = ""
     event_log: str = ""
 
 
@@ -306,6 +306,7 @@ class GameTurnMessage(PermissiveModel):
     audio_path: Optional[str] = None
     inner_thought: Optional[str] = None
     skill_feedback: Optional[SkillFeedback] = None
+    stat_deltas: dict[str, int] = Field(default_factory=dict)
 
 
 class GameTurnCharacter(PermissiveModel):
@@ -333,6 +334,7 @@ class GameTurnMission(PermissiveModel):
     characters: list[str] = Field(default_factory=list)
     objective: str = ""
     reward: str = ""
+    win_conditions: list[dict[str, Any]] = Field(default_factory=list)
 
 
 class GameTurn(PermissiveModel):
@@ -360,3 +362,4 @@ class TurnResponse(PermissiveModel):
     mission_chain: list[Mission] = Field(default_factory=list)
     world: Optional[WorldBible] = None
     debrief: Optional[MissionDebrief] = None
+    events: list[str] = Field(default_factory=list)

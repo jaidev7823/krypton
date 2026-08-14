@@ -4,6 +4,7 @@ import { create } from "zustand";
 import { enterMission, getAudio, nextTurn, revisePlan, startGame } from "@/lib/api";
 import type {
   ChatEntry,
+  CoachNotice,
   GameState,
   GameTurnCharacter,
   GameTurnMission,
@@ -25,6 +26,8 @@ interface GameStateStore {
   missionChain: Mission[];
   world: WorldBible | null;
   debrief: MissionDebrief | null;
+  events: string[];
+  notices: CoachNotice[];
   isLoading: boolean;
   error: string | null;
   audioMuted: boolean;
@@ -42,28 +45,53 @@ interface GameStateStore {
 }
 
 let entryId = 0;
+let noticeId = 0;
 
 function applyTurn(set: (fn: (s: GameStateStore) => Partial<GameStateStore>) => void, res: TurnResponse) {
   const narration = res.turn.narration;
-  const newEntries: ChatEntry[] = [
-    {
-      kind: "narration",
-      id: `n-${res.turn.turn_id}`,
-      text: narration.text,
-      where: narration.where,
-      why_here: narration.why_here,
-    },
-    ...res.turn.messages.map<ChatEntry>((m) => ({
+  // Narration is placed BELOW the player's own message, so the player reads
+  // what they just said first, then the world's reaction.
+  const playerMsgs: Extract<ChatEntry, { kind: "message" }>[] = [];
+  const charMsgs: Extract<ChatEntry, { kind: "message" }>[] = [];
+  for (const m of res.turn.messages) {
+    const entry: ChatEntry = {
       kind: "message",
       id: `m-${res.turn.turn_id}-${entryId++}`,
       speaker: m.speaker,
       text: m.text,
       inner_thought: m.inner_thought,
       skill_feedback: m.skill_feedback,
-    })),
-  ];
+      stat_deltas: m.stat_deltas,
+    };
+    if (m.speaker === "PLAYER") playerMsgs.push(entry);
+    else charMsgs.push(entry);
+  }
+  const narrationEntry: ChatEntry = {
+    kind: "narration",
+    id: `n-${res.turn.turn_id}`,
+    text: narration.text,
+    where: narration.where,
+    why_here: narration.why_here,
+  };
+  const newEntries: ChatEntry[] = [...playerMsgs, narrationEntry, ...charMsgs];
+
+  const newNotices: CoachNotice[] = [];
+  for (const pm of playerMsgs) {
+    if (pm.skill_feedback) {
+      newNotices.push({
+        id: `coach-${noticeId++}`,
+        ok: pm.skill_feedback.did_use_concept,
+        concepts: (pm.skill_feedback.concepts_used || []).join(" + ") || "NO SKILL",
+        text: pm.skill_feedback.feedback_for_player,
+        player: pm.text,
+      });
+    }
+  }
 
   set((s) => {
+    // Drop the optimistic pending player entry - the server echoes the same
+    // words back in res.turn.messages.
+    const base = s.entries.filter((e) => !(e.kind === "message" && e.pending));
     // Append entries only for turns that carry real game content. Pure lobby /
     // elicitation responses are screens, not chat. A won live turn still
     // returns mission_lobby but carries the debrief exchange -> append it.
@@ -71,11 +99,11 @@ function applyTurn(set: (fn: (s: GameStateStore) => Partial<GameStateStore>) => 
       res.game_state === "live_mission" ||
       res.game_state === "complete" ||
       res.turn.messages.length > 0;
-    let entries = s.entries;
+    let entries = base;
     if (res.game_state === "plan_elicitation") {
       entries = [];
     } else if (hasContent) {
-      entries = [...s.entries, ...newEntries];
+      entries = [...base, ...newEntries];
     }
     return {
       sessionId: res.session_id,
@@ -86,6 +114,8 @@ function applyTurn(set: (fn: (s: GameStateStore) => Partial<GameStateStore>) => 
       characters: res.turn.characters,
       mission: res.turn.mission,
       debrief: res.debrief ?? null,
+      events: res.events && res.events.length > 0 ? res.events : s.events,
+      notices: newNotices.length > 0 ? [...newNotices, ...s.notices].slice(0, 30) : s.notices,
       coachSkill: res.turn.coach ?? null,
     };
   });
@@ -101,6 +131,8 @@ export const useGameStore = create<GameStateStore>((set, get) => ({
   missionChain: [],
   world: null,
   debrief: null,
+  events: [],
+  notices: [],
   isLoading: false,
   error: null,
   audioMuted: false,
@@ -140,6 +172,25 @@ export const useGameStore = create<GameStateStore>((set, get) => ({
 
     set({ isLoading: true, error: null });
     const input = text.trim();
+
+    // Optimistic: the player's own message shows immediately instead of
+    // waiting for the whole world to react. The server echoes it back and the
+    // pending copy is dropped in applyTurn.
+    if (sessionId) {
+      set((s) => ({
+        entries: [
+          ...s.entries,
+          {
+            kind: "message",
+            id: `pending-${entryId++}`,
+            speaker: "PLAYER",
+            text: input,
+            pending: true,
+          } satisfies ChatEntry,
+        ],
+      }));
+    }
+
     try {
       const res = sessionId
         ? await nextTurn(sessionId, input)

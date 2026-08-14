@@ -4,6 +4,7 @@ import { motion, AnimatePresence } from "framer-motion";
 import { useGameStore } from "@/store/useGameStore";
 import { TopBar } from "./TopBar";
 import { ChatContainer } from "./ChatContainer";
+import { ActivitySidebar } from "./ActivitySidebar";
 import { CharacterInspectorDrawer } from "./CharacterInspectorDrawer";
 import { CoachModal } from "./CoachModal";
 
@@ -16,6 +17,7 @@ export function GamePage() {
       <TopBar />
       <div className="relative flex flex-1 overflow-hidden">
         <ChatContainer />
+        <ActivitySidebar />
         <AnimatePresence>
           {selected && (
             <motion.div

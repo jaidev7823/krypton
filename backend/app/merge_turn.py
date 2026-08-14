@@ -55,6 +55,7 @@ def merge_turn(
         characters=mission_state.get("characters", []) if mission_state else [],
         objective=mission_state.get("objective", "") if mission_state else "",
         reward=mission_state.get("reward", "") if mission_state else "",
+        win_conditions=mission_state.get("win_conditions", []) if mission_state else [],
     )
 
     # Character summaries (with live stats + deltas + memory + problem/solution)
@@ -88,7 +89,9 @@ def merge_turn(
         why_here=r3_output.why_here,
     )
 
-    # Messages: player input first, then character dialogues
+    # Messages: player input first, then character dialogues. Each character
+    # message carries the stat deltas that speech caused, so the UI can show
+    # "+1 trust" right on the bubble.
     messages: list[GameTurnMessage] = []
     if player_input.strip():
         messages.append(
@@ -109,6 +112,7 @@ def merge_turn(
                     speaker=out.character_id,
                     text=out.dialogue,
                     inner_thought=out.inner_thought or None,
+                    stat_deltas=_stat_deltas(out),
                 )
             )
 
