@@ -196,17 +196,46 @@ def chain_progress(mission_state: dict) -> str:
     return f"{len(mission_state.get('history') or [])}/{len(chain)}"
 
 
+def _condition_met(cond: dict, character_states: dict) -> bool:
+    """A single win/fail condition: does the character's live stat satisfy it?"""
+    cid = cond.get("character")
+    short = cond.get("stat", "trust")
+    canonical = STAT_KEY_MAP.get(short)
+    if not cid or not canonical:
+        return False
+    value = character_states.get(cid, {}).get("stats", {}).get(canonical, 0)
+    if "min" in cond and value < cond["min"]:
+        return False
+    if "max" in cond and value > cond["max"]:
+        return False
+    return True
+
+
+def mission_outcome(mission: dict, character_states: dict, r3_won: bool) -> str:
+    """Deterministic verdict from the mission's stat thresholds.
+
+    Returns 'won', 'failed', or 'ongoing'. R3's word is used only as a
+    fallback for legacy missions that have no structured conditions.
+    """
+    wins = mission.get("win_conditions") or []
+    fails = mission.get("fail_conditions") or []
+    if fails and any(_condition_met(c, character_states) for c in fails):
+        return "failed"
+    if wins:
+        return "won" if all(_condition_met(c, character_states) for c in wins) else "ongoing"
+    return "won" if r3_won else "ongoing"
+
+
 def apply_mission_state(mission_state: dict, r3: NarratorOutput) -> bool:
-    """Advance the fixed mission chain when R3 rules the current mission won.
+    """Advance the fixed mission chain. The caller has already decided the
+    mission was won via the deterministic stat thresholds (mission_outcome);
+    R3's own verdict is never consulted.
 
     Never creates missions - the chain was built by R0 from the player's plan.
     Returns True if the current mission was won (game_state should move on).
     """
-    ms = r3.mission_status
     current = mission_state.get("current")
     if not current:
-        return False
-    if not ms.current_mission_won:
         return False
     current["status"] = "won"
     mission_state.setdefault("history", []).append(
@@ -330,9 +359,9 @@ def _run_turn(body: TurnRequest) -> TurnResponse:
         return _complete_response(row.id, mission_state, player)
 
     # ------------------------------------------------------------------
-    # STATE 3: mission lobby. NO LLM until Enter Mission.
+    # STATE 3: mission lobby (or retry after a failure). NO LLM until Enter Mission.
     # ------------------------------------------------------------------
-    if current.get("status") == "lobby":
+    if current.get("status") in ("lobby", "failed"):
         if action == "enter_mission":
             current["status"] = "active"
             save_session_state(row.id, mission_state, character_states, conversation)
@@ -445,10 +474,16 @@ def _plan_response(session_id: str, player: PlayerSetup, world: WorldBible) -> T
 
 def _lobby_response(session_id: str, mission_state: dict, player: PlayerSetup, world: WorldBible) -> TurnResponse:
     current = mission_state.get("current") or {}
-    narration = (
-        f"Mission M{current.get('id', '?')}: {current.get('title', '')}. "
-        f"{current.get('objective', '')}"
-    )
+    if current.get("status") == "failed":
+        narration = (
+            f"Mission M{current.get('id', '?')} failed. The conversation broke down and "
+            f"{', '.join(current.get('characters') or [])} left. You'll have to try again."
+        )
+    else:
+        narration = (
+            f"Mission M{current.get('id', '?')}: {current.get('title', '')}. "
+            f"{current.get('objective', '')}"
+        )
     turn = _mission_turn(0, mission_state, narration)
     chain = mission_state.get("chain") or []
     return TurnResponse(session_id=session_id, turn=turn, game_state="mission_lobby",
@@ -508,14 +543,21 @@ def _run_live_turn(
         r1_system, r1_user, SkillFeedback, agent="listener", on_attempt=on_attempt("listener")
     )
 
-    # R2 - Character Brain, one per character in the mission cast (parallel)
+    # The brain must see the player's LATEST message. The persisted `conversation`
+    # only contains prior turns - the new input is appended AFTER R2 runs. So build
+    # a per-turn copy that ends with the player's newest words.
+    turn_conversation = list(conversation) + [{"speaker": "PLAYER", "text": body.new_player_input}]
+
+    # R2 - Character Brain, one per character in the mission cast (parallel).
+    # The brain judges ONLY the player's words - the R1 skill analysis is
+    # intentionally NOT passed to it.
     def _char_call(cid: str):
         char = character_states[cid]
         r2_system, r2_user = build_r2_prompt(
             character=char,
             mission_context=mctx,
-            conversation=conversation,
-            r1_output=r1.model_dump(mode="json"),
+            conversation=turn_conversation,
+            new_player_input=body.new_player_input,
             world_name=world.world.name,
         )
         return llm_caller.call_json(
@@ -528,27 +570,34 @@ def _run_live_turn(
         with ThreadPoolExecutor(max_workers=min(len(present_ids), 4)) as ex:
             r2_outputs = list(ex.map(_char_call, present_ids))
 
-    # R3 - Narrator / Mission judge
-    r3_system, r3_user = build_r3_prompt(
-        world,
-        player,
-        mctx,
-        r1.model_dump(mode="json"),
-        [o.model_dump(mode="json") for o in r2_outputs],
-        conversation,
-    )
-    r3 = llm_caller.call_json(
-        r3_system, r3_user, NarratorOutput, agent="narrator", on_attempt=on_attempt("narrator")
-    )
-
-    # Apply state changes
+    # Apply state changes FIRST so the mission verdict reads the post-turn stats.
     for out in r2_outputs:
         apply_r2(character_states, out)
     # Presence is ALWAYS the mission cast - ignore R3's scene_update so the
     # model can never drag in characters that are not part of the mission.
     _sync_presence(character_states, present_ids)
-    won = apply_mission_state(mission_state, r3)
 
+    # Deterministic mission verdict from the stat thresholds set by R0.
+    outcome = mission_outcome(current, character_states, False)
+
+    # R3 - Narrator (verdict already decided; it only narrates it)
+    r3_mctx = {**mctx, "computed_mission_outcome": outcome}
+    r3_system, r3_user = build_r3_prompt(
+        world,
+        player,
+        r3_mctx,
+        r1.model_dump(mode="json"),
+        [o.model_dump(mode="json") for o in r2_outputs],
+        turn_conversation,
+    )
+    r3 = llm_caller.call_json(
+        r3_system, r3_user, NarratorOutput, agent="narrator", on_attempt=on_attempt("narrator")
+    )
+
+    if outcome == "won":
+        apply_mission_state(mission_state, r3)
+    elif outcome == "failed":
+        current["status"] = "failed"
     for msg in [{"speaker": "PLAYER", "text": body.new_player_input}]:
         conversation.append(msg)
     for out in r2_outputs:
@@ -580,8 +629,10 @@ def _run_live_turn(
         provider=llm_caller.available_provider(),
     )
 
-    if won:
+    if outcome == "won":
         game_state = "complete" if mission_state.get("current") is None else "mission_lobby"
+    elif outcome == "failed":
+        game_state = "mission_lobby"
     else:
         game_state = "live_mission"
 

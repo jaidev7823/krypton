@@ -97,7 +97,7 @@ def merge_turn(
                 text=player_input,
                 skill_feedback=(
                     SkillFeedback.model_validate(r1_output.model_dump(mode="json"))
-                    if r1_output.did_use_concept or r1_output.did_pass_this_turn
+                    if r1_output.feedback_for_player.strip()
                     else None
                 ),
             )

@@ -207,6 +207,14 @@ def build_r0_prompt(
         "- Missions escalate: earlier missions are low-stakes (a single character), later ones raise the stakes.\n"
         "- Read current_character_states: those are the LIVE stats/goals/current problems AFTER the cast was projected. "
         "Mission objectives must reference the current values (e.g. 'Raise Matsuda trust from 2 to 7').\n"
+        "- EVERY mission MUST define win_conditions and fail_conditions, using the short stat names "
+        "(trust, familiarity, respect, suspicion, rapport, disclosure_level, stress) and bible character ids.\n"
+        "  * win_conditions: the stat values that mean the objective is achieved, e.g. "
+        "[{\"character\": \"MATSUDA\", \"stat\": \"trust\", \"min\": 5}]. Use 'min' for 'raise to at least X' "
+        "and 'max' for 'lower to at most X'. Base the target on the CURRENT value from current_character_states.\n"
+        "  * fail_conditions: the stat values that mean the character is frustrated enough to walk away or kick the "
+        "player out, e.g. [{\"character\": \"MATSUDA\", \"stat\": \"trust\", \"max\": 1}] or "
+        "[{\"character\": \"MATSUDA\", \"stat\": \"stress\", \"min\": 8}]. Set these so a badly-botched mission can actually fail.\n"
         "- Do NOT write dialogue or narration. Missions are objectives, not story.\n"
         "- Output ONLY JSON matching the schema exactly. No extra text, no markdown."
     )
@@ -238,6 +246,22 @@ def build_r0_prompt(
                     "characters": ["bible character ids present in this mission"],
                     "objective": "str - measurable goal e.g. 'Raise Matsuda trust from 2 to 7'",
                     "reward": "str - what the player gains on success",
+                    "win_conditions": [
+                        {
+                            "character": "bible character id",
+                            "stat": "short stat name (trust/familiarity/respect/suspicion/rapport/disclosure_level/stress)",
+                            "min": "int - optional; stat must be >= this value to win",
+                            "max": "int - optional; stat must be <= this value to win"
+                        }
+                    ],
+                    "fail_conditions": [
+                        {
+                            "character": "bible character id",
+                            "stat": "short stat name",
+                            "min": "int - optional; stat reaching this means the character is overwhelmed",
+                            "max": "int - optional; stat dropping to this means the character gives up on you"
+                        }
+                    ],
                 }
             ]
         },
@@ -257,16 +281,20 @@ def build_r1_prompt(
     conversation: list[dict[str, str]],
 ) -> tuple[str, dict]:
     system = (
-        "You are the Skill Evaluator for a learning game.\n"
-        "Your job:\n"
+        "You are the Skill Coach for a learning game.\n"
+        "Your ONLY job is to coach the player on their use of negotiation skills.\n"
         "- Read the player's latest input and the full conversation of this mission.\n"
         "- Detect which skills from the skill bible the player used, using each skill's how_to_detect rules.\n"
         "- Judge how properly it was used given the player's background and personality.\n"
+        "- If they used a skill well, praise them briefly. If they did NOT, clearly tell them "
+        "what they did wrong and what they could do better.\n"
+        "- You are a coach. You have NO influence on how characters react and NO influence on "
+        "mission outcomes - only on the player's learning.\n"
         "- Never invent skills outside the bible.\n"
         "- Output ONLY JSON matching the schema exactly. No extra text, no markdown."
     )
     user = {
-        "task": "Evaluate the player's latest message for skill usage.",
+        "task": "Coach the player on their skill usage.",
         "player": player.model_dump(mode="json"),
         "skill_bible": skill_bible.model_dump(mode="json"),
         "mission_context": mission_context,
@@ -277,9 +305,7 @@ def build_r1_prompt(
             "concepts_used": ["skill ids from bible"],
             "how_properly_used": "str - quality of execution",
             "player_intent": "str - what the player is trying to achieve",
-            "new_plan_proposed_by_player": "bool",
-            "did_pass_this_turn": "bool",
-            "feedback_for_player": "str - one line feedback to show the player",
+            "feedback_for_player": "str - one line: praise if they used a skill well, coaching if they did not",
         },
     }
     return system, user
@@ -293,8 +319,8 @@ def build_r2_prompt(
     character: dict[str, Any],
     mission_context: dict[str, Any],
     conversation: list[dict[str, str]],
-    r1_output: dict[str, Any],
     world_name: str,
+    new_player_input: str,
 ) -> tuple[str, dict]:
     stats = character.get("stats") or {}
     dynamics = character.get("relationship_dynamics", "")
@@ -306,8 +332,10 @@ def build_r2_prompt(
         "Rules:\n"
         "- Speak EXACTLY in your dialogue_style: use your vocab, follow speech_pattern, never say the never_says.\n"
         "- You have a current problem you are facing and a solution you are trying. Think using your problem_solving_framework.\n"
-        "- You received an analysis of the player's skill usage. React as YOURSELF, not as a fixed rule.\n"
-        "- If the player used a skill well, react positively and update your stats. Decide deltas based on YOUR personality.\n"
+        "- You decide your own stat changes, purely as YOUR character, based ONLY on what the player actually said and did to you. "
+        "Whether the player used a negotiation technique well or badly does NOT dictate how you feel - "
+        "a slick technique you see through moves you less than a simple honest statement. "
+        "Move trust/familiarity/respect/suspicion/rapport/disclosure/stress only if the player's words genuinely affect how you feel about them.\n"
         "- Stats live on a 0-10 scale (0 = none, 10 = max). Deltas are small integers, typically -2..+2.\n"
         "- inner_thought is private and never spoken - it reflects how your problem_solving_framework interprets this exchange.\n"
         "- If this exchange changes your problem or solution, update current_problem and solution.\n"
@@ -327,9 +355,8 @@ def build_r2_prompt(
     user = {
         "task": f"Act as {character.get('id')} and respond to the player for this turn.",
         "character_bible": character,
-        "skill_analysis_from_listener": r1_output,
-        "mission_context": mission_context,
         "full_conversation_this_mission": conversation,
+        "new_player_input": new_player_input,
         "output_schema": {
             "character_id": "your id",
             "reasoning": {
@@ -376,8 +403,12 @@ def build_r3_prompt(
         "Rules:\n"
         "- You are NOT a character. You describe the environment like a narrator.\n"
         "- Explain where the player is, why they are here, and context they don't have.\n"
-        "- You decide if the CURRENT mission is won or lost, based on the skill evaluation and the characters' stat changes.\n"
-        "- You do NOT create missions or invent new story arcs. The mission chain is already fixed; your only verdict is current_mission_won.\n"
+        "- The mission's win/loss is already decided mechanically by the Mission Manager from the stat "
+        "thresholds - see computed_mission_outcome in your payload. NEVER change that verdict.\n"
+        "- If computed_mission_outcome is 'won', narrate the objective being achieved. If 'failed', narrate "
+        "the character getting frustrated and leaving or kicking the player out. If 'ongoing', narrate the scene only.\n"
+        "- Set current_mission_won true ONLY if computed_mission_outcome is 'won'.\n"
+        "- You do NOT create missions or invent new story arcs. The mission chain is already fixed.\n"
         "- Report chain_progress exactly as given in mission_context.\n"
         "- The current scene and its characters are defined by the active mission. Do not add characters who are not in the mission.\n"
         "- Output ONLY JSON matching the schema exactly."

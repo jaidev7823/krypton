@@ -25,6 +25,17 @@ export function MissionLobbyScreen() {
           </motion.div>
         )}
 
+        {mission?.status === "failed" && (
+          <motion.div
+            initial={{ opacity: 0, y: 10 }}
+            animate={{ opacity: 1, y: 0 }}
+            className="rounded-xl border border-suspicion/40 bg-suspicion/10 p-4 text-sm text-suspicion"
+          >
+            Mission failed - the conversation broke down and the character left.
+            Enter the mission again and repair the damage.
+          </motion.div>
+        )}
+
         <motion.div
           initial={{ opacity: 0, y: 12 }}
           animate={{ opacity: 1, y: 0 }}

@@ -3,8 +3,6 @@ export interface SkillFeedback {
   concepts_used: string[];
   how_properly_used: string;
   player_intent: string;
-  new_plan_proposed_by_player: boolean;
-  did_pass_this_turn: boolean;
   feedback_for_player: string;
 }
 

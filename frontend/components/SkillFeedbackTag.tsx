@@ -3,7 +3,7 @@
 import type { SkillFeedback } from "@/lib/types";
 
 export function SkillFeedbackTag({ feedback }: { feedback: SkillFeedback }) {
-  const ok = feedback.did_use_concept && feedback.did_pass_this_turn;
+  const ok = feedback.did_use_concept;
   const concepts = (feedback.concepts_used || []).join(" + ");
 
   return (

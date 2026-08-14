@@ -36,7 +36,7 @@ from app.types import (  # noqa: E402
 )
 
 CALLS: list[str] = []
-LIVE_TURNS = {"count": 0}
+BRAIN_MODE = {"fail": False}
 
 
 def _fake_model(agent):
@@ -56,16 +56,39 @@ def _fake_model(agent):
     if agent == "mission_architect":
         return MissionArchitectOutput(mission_chain=[
             Mission(id=1, title="Matsuda Bridge", description="Get a referral",
-                    objective="Raise Matsuda trust", reward="Matsuda's number",
-                    location="Cafeteria", characters=["MATSUDA"]),
+                    objective="Raise Matsuda trust to 6", reward="Matsuda's number",
+                    location="Cafeteria", characters=["MATSUDA"],
+                    win_conditions=[{"character": "MATSUDA", "stat": "trust", "min": 6}],
+                    fail_conditions=[{"character": "MATSUDA", "stat": "trust", "max": 1}]),
             Mission(id=2, title="Earn L's attention", description="Get noticed",
-                    objective="Lower L suspicion", reward="L's interest",
-                    location="Class 3B", characters=["L"]),
+                    objective="Lower L suspicion to 3", reward="L's interest",
+                    location="Class 3B", characters=["L"],
+                    win_conditions=[{"character": "L", "stat": "suspicion", "max": 3}],
+                    fail_conditions=[{"character": "L", "stat": "suspicion", "min": 7}]),
         ])
     if agent == "listener":
         return SkillFeedback(did_use_concept=False)
     if agent.startswith("brain:"):
         cid = agent.split(":", 1)[1]
+        if BRAIN_MODE["fail"] and cid == "MATSUDA":
+            return CharacterBrainOutput(
+                character_id=cid,
+                reasoning=CharacterReasoning(
+                    personality="Warm and eager",
+                    current_goal="Win the player over",
+                    current_problem="Prove myself",
+                    current_strategy="Be friendly",
+                    relationship_state=f"{cid} has lost faith and wants out.",
+                    current_interaction="The player alienated me.",
+                ),
+                dialogue=f"{cid} gets frustrated and leaves",
+                inner_thought=f"{cid} thinks this is hopeless",
+                stat_changes=StatChanges(
+                    trust=StatChange(delta=-4, reason="Player was off-putting"),
+                    suspicion=StatChange(delta=2, reason="Now distrustful"),
+                    stress=StatChange(delta=3, reason="Frustrated"),
+                ),
+            )
         return CharacterBrainOutput(
             character_id=cid,
             reasoning=CharacterReasoning(
@@ -89,11 +112,10 @@ def _fake_model(agent):
             ),
         )
     if agent == "narrator":
-        won = LIVE_TURNS["count"] >= 1
         return NarratorOutput(narration="The cafeteria hums.",
                               where="Cafeteria",
                               why_here="Mission in progress",
-                              mission_status={"current_mission_won": won})
+                              mission_status={"current_mission_won": True})
     raise AssertionError(f"unexpected agent {agent}")
 
 
@@ -193,12 +215,25 @@ def run_checks():
     check(r.game_state == "live_mission", "enter_mission -> live_mission")
     check(CALLS == ["caster", "mission_architect"], "enter_mission still no LLM")
 
-    # STATE 4: live turn -> R1+R2(cast only)+R3, presence synced
+    # STATE 4: live turn -> R1+R2(cast only)+R3, presence synced.
+    # The narrator FAKE always claims current_mission_won=True - but the real
+    # verdict is deterministic (Matsuda trust needs 6). Turn 1 only reaches 5,
+    # so the mission MUST stay live even though R3 said "won".
     r = main._run_turn(TurnRequest(session_id=sid, new_player_input="Hello Matsuda"))
-    LIVE_TURNS["count"] += 1
-    check(r.game_state == "live_mission", "live turn stays live")
+    check(r.game_state == "live_mission", "mission stays live until the stat goal is met (R3's verdict ignored)")
     brains = [c for c in CALLS if c.startswith("brain:")]
     check(brains == ["brain:MATSUDA"], f"R2 ran ONLY for mission cast (got {brains})")
+
+    # Context check: the brain MUST receive the player's latest message. The
+    # persisted conversation is appended only after R2, so the turn payload must
+    # carry new_player_input + a conversation ending with the player's words.
+    brain_call = next(c for c in db_module.get_agent_calls(sid) if c.agent == "brain:MATSUDA")
+    payload = brain_call.user_payload
+    conv = payload.get("full_conversation_this_mission") or payload.get("conversation") or []
+    check(payload.get("new_player_input") == "Hello Matsuda",
+          "R2 payload carries the player's latest message (new_player_input)")
+    check(conv and conv[-1].get("speaker") == "PLAYER" and conv[-1].get("text") == "Hello Matsuda",
+          "R2 conversation ends with the player's latest message")
     row = db_module.get_session(sid)
     present = [cid for cid, s in row.character_states.items() if s.get("present")]
     check(present == ["MATSUDA"], f"presence synced to mission cast only (got {present})")
@@ -219,26 +254,49 @@ def run_checks():
     check(bool(mchar.relationship_state and mchar.relationship_state.startswith("MATSUDA")),
           "turn character carries R2 reasoning.relationship_state")
 
-    # STATE 4 -> 5: second live turn, R3 rules won -> advance to M2 lobby
+    # STATE 4 -> 5: trust reaches 6 -> won -> advance to M2 lobby
     CALLS.clear()
     r = main._run_turn(TurnRequest(session_id=sid, new_player_input="A perfect accusation audit"))
-    LIVE_TURNS["count"] += 1
-    check(r.game_state == "mission_lobby", "won mission -> lobby for M2")
+    check(r.game_state == "mission_lobby", "stat goal reached -> mission won, lobby for M2")
     check(r.turn.mission.title == "Earn L's attention" and r.turn.mission.status == "lobby",
           "advanced to M2 in lobby")
     check(r.turn.mission.chain_progress == "1/2", "chain progress 1/2")
 
-    # enter M2 -> live -> win M2 -> complete
+    # enter M2 -> L suspicion needs to drop to 3 (5 -> 4 on turn 1 -> still live)
     r = main._run_turn(TurnRequest(session_id=sid, action="enter_mission", new_player_input=""))
     check(r.game_state == "live_mission", "M2 entered")
-    r = main._run_turn(TurnRequest(session_id=sid, new_player_input="win it"))
-    LIVE_TURNS["count"] += 1
-    check(r.game_state == "complete", "final mission won -> complete")
+    r = main._run_turn(TurnRequest(session_id=sid, new_player_input="engage L"))
+    check(r.game_state == "live_mission", "M2 turn 1 stays live (suspicion 4 > 3)")
+    r = main._run_turn(TurnRequest(session_id=sid, new_player_input="disarm L"))
+    check(r.game_state == "complete", "M2 suspicion hits 3 -> complete")
 
     # defensive: calling turn with no plan and no action returns elicitation
     r = main._run_turn(TurnRequest(player_setup=json.loads(json.dumps(setup_json())),
                                    new_player_input="hi"))
     check(r.game_state == "plan_elicitation", "no-plan turn stays in elicitation")
+
+    # ---- FAIL PATH: a character who gets frustrated leaves / kicks the player ----
+    r = main._run_turn(TurnRequest(player_setup=json.loads(json.dumps(setup_json())),
+                                   new_player_input="", action="start"))
+    fail_sid = r.session_id
+    main._run_turn(TurnRequest(session_id=fail_sid, action="submit_plan",
+                               plan_text="Get close to Matsuda"))
+    main._run_turn(TurnRequest(session_id=fail_sid, action="enter_mission", new_player_input=""))
+    CALLS.clear()
+    BRAIN_MODE["fail"] = True
+    r = main._run_turn(TurnRequest(session_id=fail_sid, new_player_input="Rude outburst"))
+    BRAIN_MODE["fail"] = False
+    check(r.game_state == "mission_lobby", "frustrated character -> mission failed, back to lobby")
+    check(r.turn.mission.status == "failed", "failed mission reported with status 'failed'")
+    row = db_module.get_session(fail_sid)
+    check(row.mission_state["current"]["status"] == "failed",
+          "persisted current mission marked failed (retry not auto-advanced)")
+    check(row.character_states["MATSUDA"]["stats"]["trust_towards_player"] == 0,
+          "trust cratered (4 - 4) - the damage persists for the retry")
+    # retry: re-entering the failed mission works and reactivates it
+    r = main._run_turn(TurnRequest(session_id=fail_sid, action="enter_mission", new_player_input=""))
+    check(r.game_state == "live_mission" and r.turn.mission.status == "active",
+          "failed mission can be re-entered (status -> active)")
 
     print("\nALL STATE CHECKS PASSED")
 

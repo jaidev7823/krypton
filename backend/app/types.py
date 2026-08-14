@@ -149,12 +149,12 @@ class PlayerSetup(PermissiveModel):
 # ---------------------------------------------------------------------------
 
 class SkillFeedback(PermissiveModel):
+    """R1 output - a pure skill coach. It only detects concept usage and
+    coaches the player; it has NO influence on stats or mission outcome."""
     did_use_concept: bool = False
     concepts_used: list[str] = Field(default_factory=list)
     how_properly_used: str = ""
     player_intent: str = ""
-    new_plan_proposed_by_player: bool = False
-    did_pass_this_turn: bool = False
     feedback_for_player: str = ""
 
 
@@ -235,6 +235,8 @@ class Mission(PermissiveModel):
     characters: list[str] = Field(default_factory=list)
     objective: str = ""
     reward: str = ""
+    win_conditions: list[dict[str, Any]] = Field(default_factory=list)
+    fail_conditions: list[dict[str, Any]] = Field(default_factory=list)
 
 
 class MissionArchitectOutput(PermissiveModel):
