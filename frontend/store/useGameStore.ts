@@ -1,9 +1,10 @@
 "use client";
 
 import { create } from "zustand";
-import { enterMission, getAudio, nextTurn, openRevision, revisePlan, startGame } from "@/lib/api";
+import { askCoach, enterMission, getAudio, nextTurn, openRevision, revisePlan, startGame } from "@/lib/api";
 import type {
   ChatEntry,
+  CoachMessage,
   CoachNotice,
   GameState,
   GameTurnCharacter,
@@ -35,6 +36,9 @@ interface GameStateStore {
   audioPaths: Record<string, string>;
   selectedCharacterId: string | null;
   coachSkill: Skill | null;
+  coachOpen: boolean;
+  coachMessages: CoachMessage[];
+  coachLoading: boolean;
 
   setupPlayer: (p: PlayerSetup) => Promise<void>;
   startMission: () => Promise<void>;
@@ -44,6 +48,8 @@ interface GameStateStore {
   selectCharacter: (id: string | null) => void;
   toggleAudio: () => void;
   openCoach: (skill: Skill | null) => void;
+  toggleCoach: () => void;
+  askCoach: (text: string) => Promise<void>;
 }
 
 let entryId = 0;
@@ -143,6 +149,9 @@ export const useGameStore = create<GameStateStore>((set, get) => ({
   audioPaths: {},
   selectedCharacterId: null,
   coachSkill: null,
+  coachOpen: false,
+  coachMessages: [],
+  coachLoading: false,
 
   setupPlayer: async (p) => {
     set({ isLoading: true, error: null, player: p });
@@ -238,6 +247,32 @@ export const useGameStore = create<GameStateStore>((set, get) => ({
   selectCharacter: (id) => set({ selectedCharacterId: id }),  toggleAudio: () => set({ audioMuted: !get().audioMuted }),
 
   openCoach: (skill) => set({ coachSkill: skill }),
+
+  toggleCoach: () => set({ coachOpen: !get().coachOpen }),
+
+  askCoach: async (text) => {
+    const { sessionId, coachMessages } = get();
+    const input = text.trim();
+    if (!sessionId || !input || get().coachLoading) return;
+    const history = coachMessages;
+    set({
+      coachLoading: true,
+      coachMessages: [...coachMessages, { role: "player", content: input }],
+    });
+    try {
+      const res = await askCoach(sessionId, input, history);
+      set({ coachMessages: [...get().coachMessages, { role: "coach", content: res.reply }] });
+    } catch {
+      set({
+        coachMessages: [
+          ...get().coachMessages,
+          { role: "coach", content: "The coach is unavailable right now." },
+        ],
+      });
+    } finally {
+      set({ coachLoading: false });
+    }
+  },
 }));
 
 // Audio helper shared by CharacterMessage

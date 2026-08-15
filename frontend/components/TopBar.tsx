@@ -49,6 +49,7 @@ export function TopBar() {
   const player = useGameStore((s) => s.player);
   const characters = useGameStore((s) => s.characters);
   const gameState = useGameStore((s) => s.gameState);
+  const toggleCoach = useGameStore((s) => s.toggleCoach);
 
   const progress =
     mission?.win_conditions?.length && gameState === "live_mission"
@@ -104,6 +105,14 @@ export function TopBar() {
             ))}
           </div>
         )}
+        <button
+          type="button"
+          onClick={toggleCoach}
+          className="rounded-lg border border-edge bg-surface-2 px-3 py-1.5 text-xs font-semibold text-muted transition hover:border-accent/50 hover:text-ink"
+          title="Ask the Coach"
+        >
+          🎓 Coach
+        </button>
         <AudioButton />
       </div>
     </header>

@@ -157,6 +157,11 @@ export interface AudioResponse {
   available: boolean;
 }
 
+export interface CoachMessage {
+  role: "player" | "coach";
+  content: string;
+}
+
 // Normalized chat entry used by the UI
 export type ChatEntry =
   | { kind: "narration"; id: string; text: string; where: string; why_here: string }

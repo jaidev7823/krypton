@@ -6,11 +6,13 @@ import { TopBar } from "./TopBar";
 import { ChatContainer } from "./ChatContainer";
 import { ActivitySidebar } from "./ActivitySidebar";
 import { CharacterInspectorDrawer } from "./CharacterInspectorDrawer";
+import { CoachChatDrawer } from "./CoachChatDrawer";
 import { CoachModal } from "./CoachModal";
 
 export function GamePage() {
   const selected = useGameStore((s) => s.selectedCharacterId);
   const coachSkill = useGameStore((s) => s.coachSkill);
+  const coachOpen = useGameStore((s) => s.coachOpen);
 
   return (
     <div className="flex h-screen flex-col bg-bg">
@@ -31,6 +33,9 @@ export function GamePage() {
               <CharacterInspectorDrawer characterId={selected} />
             </motion.div>
           )}
+        </AnimatePresence>
+        <AnimatePresence>
+          {coachOpen && <CoachChatDrawer />}
         </AnimatePresence>
       </div>
       <AnimatePresence>{coachSkill && <CoachModal skill={coachSkill} />}</AnimatePresence>

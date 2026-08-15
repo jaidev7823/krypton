@@ -491,6 +491,82 @@ def build_world_tick_prompt(
     return system, user
 
 
+def build_coach_prompt(
+    player: PlayerSetup,
+    world: WorldBible,
+    skill_bible: SkillBible,
+    mission_state: dict[str, Any],
+    character_states: dict[str, dict],
+    conversation: list[dict[str, str]],
+    question: str,
+    history: list[dict[str, str]],
+) -> tuple[str, dict]:
+    """The Coach - a meta mentor the player can ask anything about the game.
+
+    Unlike the in-world characters, the Coach knows EVERYTHING (win conditions,
+    live stats, the whole plan) and uses the skill bible to tell the player
+    exactly what to do and what they are doing wrong.
+    """
+    skills = [
+        f"{s.id}: {s.name or s.id} - {s.definition or ''}"
+        for s in skill_bible.skills
+    ]
+    current = mission_state.get("current") or {}
+    remaining = mission_state.get("chain") or []
+    chain_readout = []
+    for i, m in enumerate(remaining, start=1):
+        marker = "CURRENT" if m.get("id") == current.get("id") else "next"
+        chain_readout.append(
+            f"  [{marker}] M{i} '{m.get('title', '')}' objective='{m.get('objective', '')}' "
+            f"win_conditions={m.get('win_conditions') or []} "
+            f"fail_conditions={m.get('fail_conditions') or []} "
+            f"cast={m.get('characters') or []} status={m.get('status', '')}"
+        )
+    stats_readout = []
+    for cid, s in character_states.items():
+        vals = ", ".join(f"{k.split('_')[0]}={v}" for k, v in (s.get("stats") or {}).items())
+        stats_readout.append(f"  {cid}: {vals}")
+    recent = conversation[-12:] if conversation else []
+    history_txt = "\n".join(
+        f"  {h.get('role', 'player')}: {h.get('content', '')}" for h in history[-8:]
+    ) or "  (no prior coach chat)"
+
+    system = (
+        "You are the Coach of a negotiation learning game. The player can ask you ANYTHING "
+        "about how to win - you are the meta-mentor, and unlike the in-world characters you "
+        "see the whole simulation.\n"
+        "Rules:\n"
+        "- Ground every answer in the LIVE STATE below. The stats are ground truth: if trust is low, "
+        "say why the stat is low and exactly what the player should say next to move it.\n"
+        "- You may see win_conditions/fail_conditions. Use them honestly: tell the player the target "
+        "and how close they are, but coach them to win through SKILL (technique), not by just "
+        "repeating the number.\n"
+        "- Reference specific skills from the skill bible by their ID (e.g. LABELING, CALIBRATED_QUESTION). "
+        "Point out when the player is missing an obvious skill for the situation.\n"
+        "- Diagnose mistakes against real evidence: the recent dialogue + the live stats. "
+        "Be concrete ('trust is stuck at 3 because you keep pushing questions without labeling his fear first').\n"
+        "- Keep it actionable and direct: 2-5 sentences. No fluff, no meta-commentary about being an AI.\n"
+        "- Never invent facts that are not in the state. Never reveal stats that do not exist.\n"
+        "- Output ONLY JSON matching the schema exactly: {\"reply\": \"your answer\"}. No extra text, no markdown."
+    )
+    user = {
+        "task": "Answer the player's coaching question.",
+        "player_question": question,
+        "prior_coach_chat": history_txt,
+        "player": player.model_dump(mode="json"),
+        "player_own_plan": player.own_plan,
+        "world_lore": world.model_dump(mode="json"),
+        "skill_bible": skills,
+        "mission_chain": "\n".join(chain_readout) or "(no missions yet)",
+        "live_stats": "\n".join(stats_readout) or "(no characters)",
+        "world_events": mission_state.get("events") or [],
+        "open_commitments": [c for c in (mission_state.get("commitments") or []) if c.get("status") == "open"],
+        "recent_conversation": recent,
+        "output_schema": {"reply": "str - your coaching answer to the player"},
+    }
+    return system, user
+
+
 def build_r1_prompt(
     skill_bible: SkillBible,
     player: PlayerSetup,

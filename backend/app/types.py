@@ -403,8 +403,24 @@ class TurnRequest(PermissiveModel):
     session_id: Optional[str] = None
     player_setup: Optional[PlayerSetup] = None
     new_player_input: str = ""
-    action: str = ""  # "start" | "submit_plan" | "enter_mission" | "turn"
+    action: str = ""  # "start" | "submit_plan" | "enter_mission" | "turn" | "revise_plan"
     plan_text: str = ""
+
+
+class CoachMessage(PermissiveModel):
+    role: str = "player"  # "player" | "coach"
+    content: str = ""
+
+
+class CoachRequest(PermissiveModel):
+    session_id: str = ""
+    message: str = ""
+    history: list[CoachMessage] = Field(default_factory=list)
+
+
+class CoachReply(PermissiveModel):
+    """The Coach's answer - free-text guidance grounded in the live game state."""
+    reply: str = ""
 
 
 class TurnResponse(PermissiveModel):

@@ -1,4 +1,4 @@
-import type { AudioResponse, PlayerSetup, TurnResponse } from "./types";
+import type { AudioResponse, CoachMessage, PlayerSetup, TurnResponse } from "./types";
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
 
@@ -55,4 +55,16 @@ export function nextTurn(sessionId: string, input: string): Promise<TurnResponse
 
 export function getAudio(characterId: string, dialogue: string): Promise<AudioResponse> {
   return post<AudioResponse>("/api/audio", { character_id: characterId, dialogue });
+}
+
+export function askCoach(
+  sessionId: string,
+  message: string,
+  history: CoachMessage[],
+): Promise<{ reply: string }> {
+  return post<{ reply: string }>("/api/coach", {
+    session_id: sessionId,
+    message,
+    history: history.map((h) => ({ role: h.role, content: h.content })),
+  });
 }

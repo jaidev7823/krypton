@@ -31,9 +31,10 @@ SQLModel.metadata.create_all(db_module.engine)
 from app import llm_caller, main  # noqa: E402
 from app.types import (  # noqa: E402
     CastProjectionOutput, CharacterBrainOutput, CharacterProjection, CharacterReasoning,
-    Commitment, Mission, MissionArchitectOutput, MissionDebrief, MissionEndOutput,
-    NarratorOutput, NextMissionAdjustment, NpcAction, NpcEffect, ReconcileOutput,
-    SkillFeedback, StatChange, StatChanges, TurnRequest, WorldEffect, WorldTickOutput,
+    CoachReply, CoachRequest, Commitment, Mission, MissionArchitectOutput, MissionDebrief,
+    MissionEndOutput, NarratorOutput, NextMissionAdjustment, NpcAction, NpcEffect,
+    ReconcileOutput, SkillFeedback, StatChange, StatChanges, TurnRequest, WorldEffect,
+    WorldTickOutput,
 )
 
 CALLS: list[str] = []
@@ -94,6 +95,10 @@ def _fake_model(agent):
                       action="studied the player's background file in private",
                       effects=[NpcEffect(stat="stress", delta=1, reason="Light is uneasy about the new arrival")]),
         ])
+    if agent == "coach":
+        return CoachReply(reply="Matsuda trust is still 4/6. Stop pushing questions - "
+                                 "label his fear first (LABELING), then use a CALIBRATED_QUESTION "
+                                 "to get him to open up about the case.")
     if agent == "listener":
         return SkillFeedback(did_use_concept=False)
     if agent.startswith("brain:"):
@@ -364,6 +369,18 @@ def run_checks():
           "world tick persisted a stat drift on a non-cast NPC (Ryuk)")
     check(row.character_states["L"]["stats"]["suspicion_towards_player"] == 5,
           "world tick never touched L (next mission's stats stay fair)")
+
+    # Coach chat: player can ask the Coach anything; it reads the live state
+    coach_resp = main.api_coach(CoachRequest(
+        session_id=sid,
+        message="What concept should I use to win?",
+        history=[{"role": "player", "content": "Hi"},
+                 {"role": "coach", "content": "Ask me anything about the state."}],
+    ))
+    check(coach_resp["reply"] and "LABELING" in coach_resp["reply"],
+          "coach answers with a concrete skill from the bible")
+    calls = db_module.get_agent_calls(sid)
+    check(any(c.agent == "coach" for c in calls), "coach Q&A audited to agent_calls")
 
     # enter M2 -> the OUTLINE is fleshed out at entry time (mission_flesher)
     CALLS.clear()

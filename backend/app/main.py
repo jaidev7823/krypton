@@ -26,6 +26,7 @@ from .db import create_session, get_session, last_turn_number, save_session_stat
 from .merge_turn import merge_turn
 from .prompt_builder import (
     build_cast_prompt,
+    build_coach_prompt,
     build_flesh_prompt,
     build_r0_prompt,
     build_r1_prompt,
@@ -38,6 +39,8 @@ from .prompt_builder import (
 from .types import (
     CastProjectionOutput,
     CharacterBrainOutput,
+    CoachReply,
+    CoachRequest,
     GameTurn,
     GameTurnMission,
     GameTurnNarration,
@@ -1033,3 +1036,37 @@ def api_skill(concept: str) -> dict:
         if skill.id.upper() == concept.strip().upper():
             return skill.model_dump(mode="json")
     raise HTTPException(404, f"skill {concept} not found in {book.book}")
+
+
+@app.post("/api/coach")
+def api_coach(body: CoachRequest) -> dict:
+    """The Coach chat: answer the player's question with full game transparency.
+
+    The Coach sees the live stats, the mission chain (incl. win/fail
+    conditions), events, commitments and recent dialogue, and coaches the
+    player toward the skill bible so they can win through technique.
+    """
+    row = get_session(body.session_id)
+    if row is None:
+        raise HTTPException(404, f"Session {body.session_id} not found")
+    if not (body.message or "").strip():
+        raise HTTPException(400, "message required")
+    player = PlayerSetup.model_validate(row.player_setup)
+    world = load_world_bible(row.world_choice)
+    skill = load_skill_bible(row.skill_choice)
+    mission_state = row.mission_state or {"chain": [], "current": None, "history": []}
+    character_states = row.character_states or {}
+    on_attempt = _make_agent_logger(row.id, 0)
+    sys_prompt, user_payload = build_coach_prompt(
+        player, world, skill, mission_state, character_states,
+        row.conversation, body.message,
+        [h.model_dump(mode="json") for h in body.history],
+    )
+    try:
+        reply = llm_caller.call_json(
+            sys_prompt, user_payload, CoachReply,
+            agent="coach", on_attempt=on_attempt("coach"),
+        )
+    except RuntimeError as e:
+        raise HTTPException(502, f"Coach unavailable: {e}")
+    return {"reply": reply.reply.strip()}
