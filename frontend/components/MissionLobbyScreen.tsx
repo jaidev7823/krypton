@@ -12,12 +12,33 @@ export function MissionLobbyScreen() {
   const startMission = useGameStore((s) => s.startMission);
   const requestRevision = useGameStore((s) => s.requestRevision);
   const shiftNotice = useGameStore((s) => s.shiftNotice);
+  const events = useGameStore((s) => s.events);
 
   const recap = entries.filter((e) => e.kind === "narration").pop();
+  const meanwhile = events.filter((e) => e.startsWith("Meanwhile,")).slice(-2);
 
   return (
     <div className="min-h-screen bg-bg p-4 sm:p-8">
       <div className="mx-auto flex max-w-2xl flex-col gap-4">
+        {meanwhile.length > 0 && (
+          <motion.div
+            initial={{ opacity: 0, y: 10 }}
+            animate={{ opacity: 1, y: 0 }}
+            className="rounded-xl border border-edge bg-surface/40 p-4"
+          >
+            <p className="text-xs font-semibold uppercase tracking-wide text-muted">
+              Meanwhile
+            </p>
+            <ul className="mt-1.5 space-y-1">
+              {meanwhile.map((e, i) => (
+                <li key={`${i}-${e}`} className="text-sm italic text-muted">
+                  {e}
+                </li>
+              ))}
+            </ul>
+          </motion.div>
+        )}
+
         {shiftNotice && (
           <motion.div
             initial={{ opacity: 0, y: 10 }}

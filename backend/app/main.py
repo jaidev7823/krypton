@@ -33,6 +33,7 @@ from .prompt_builder import (
     build_r3_prompt,
     build_r4_prompt,
     build_reconcile_prompt,
+    build_world_tick_prompt,
 )
 from .types import (
     CastProjectionOutput,
@@ -52,6 +53,8 @@ from .types import (
     TurnRequest,
     TurnResponse,
     WorldBible,
+    WorldEffect,
+    WorldTickOutput,
 )
 
 logging.basicConfig(level=logging.INFO)
@@ -396,6 +399,46 @@ def _reconcile_next(
     if rec.material_shift and rec.shift_summary.strip():
         mission_state["reconcile_shift"] = rec.shift_summary.strip()
         mission_state.setdefault("events", []).append(f"WORLD SHIFT: {rec.shift_summary.strip()}")
+
+
+def _world_tick(
+    player: PlayerSetup,
+    world: WorldBible,
+    mission_state: dict,
+    character_states: dict,
+    outcome: str,
+    on_attempt=None,
+) -> None:
+    """R7: the NPCs NOT in the player's mission were busy off-screen.
+
+    Persist their stat drift + log 'Meanwhile...' events so the world visibly
+    keeps moving even when the player is focused on one thread.
+    """
+    current = mission_state.get("current") or {}
+    tick_system, tick_user = build_world_tick_prompt(
+        player, world, outcome, current, character_states,
+        mission_state.get("events") or [],
+    )
+    tick = llm_caller.call_json(
+        tick_system, tick_user, WorldTickOutput,
+        agent="world_tick",
+        on_attempt=on_attempt("world_tick") if on_attempt else None,
+    )
+    cast = [c for c in (current.get("characters") or [])]
+    events = mission_state.setdefault("events", [])
+    for a in tick.actions:
+        cid = a.character
+        if not cid or cid in cast or cid not in character_states:
+            continue
+        if a.effects:
+            apply_world_effects(character_states, [
+                WorldEffect(character=cid, stat=e.stat, delta=e.delta, reason=e.reason)
+                for e in a.effects
+            ])
+        action = a.action.strip()
+        if action:
+            events.append(f"Meanwhile, {cid} {action}.")
+
 
 
 def _make_agent_logger(session_id: str, turn_number: int):
@@ -864,6 +907,11 @@ def _run_live_turn(
             character_states[r4.character]["memory"] = [r4.memory.strip()]
         if r4.event_log.strip():
             mission_state.setdefault("events", []).append(r4.event_log.strip())
+
+        # R7 - World Tick: everyone else in the world kept moving while the
+        # player was locked into this mission. Runs on BOTH win and fail.
+        _world_tick(player, world, mission_state, character_states, outcome,
+                    on_attempt=on_attempt)
 
     if outcome == "won":
         # R6 - Scenario Director FIRST (while `current` is still the finished

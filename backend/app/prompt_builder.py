@@ -426,6 +426,71 @@ def build_reconcile_prompt(
     return system, user
 
 
+def build_world_tick_prompt(
+    player: PlayerSetup,
+    world: WorldBible,
+    outcome: str,
+    finished_mission: dict[str, Any],
+    character_states: dict[str, dict],
+    events: list[str],
+) -> tuple[str, dict]:
+    """R7 (World Tick): what non-cast NPCs did on their own while the player was
+    locked into a mission. Their agendas advance even when the player never
+    talks to them, so the world visibly changes between missions."""
+    cast = [c for c in (finished_mission.get("characters") or [])]
+    system = (
+        "You are the World Tick of a living world simulation.\n"
+        "Your job: while the player was inside a mission, the other NPCs kept living "
+        "their own lives. Surface what happened off-screen.\n"
+        "Rules:\n"
+        "- Produce 1-3 actions from autonomous_players who were NOT part of the finished mission's cast. "
+        "Cast members were in the room with the player - their actions are already visible, skip them.\n"
+        "- Each action must be consistent with that character's role and goal in the bible.\n"
+        "- The action happens OFF-SCREEN: no dialogue, no confrontation with the player, "
+        "just what they did on their own (investigated, brooded, made a call, planned, etc.).\n"
+        "- effects: at most 2 permanent stat drifts for THAT character (the 7 canonical stats: "
+        "suspicion_towards_player, trust_towards_player, familiarity_towards_player, respect_towards_player, "
+        "rapport_towards_player, disclosure_level, stress). Keep deltas small (-2..+2).\n"
+        "- reason must be a concrete in-world justification for the drift.\n"
+        "- Prefer actions that build tension or momentum toward the player's stated goal - "
+        "the player's own plan should feel like it is racing against other people's agendas.\n"
+        "- Do NOT contradict a stat the player worked to move in dialogue (e.g. do not quietly undo "
+        "the trust they earned).\n"
+        "- Output ONLY JSON matching the schema exactly. No extra text, no markdown."
+    )
+    user = {
+        "task": "Advance the world in the background while a mission concluded.",
+        "player": player.model_dump(mode="json"),
+        "player_own_plan": player.own_plan,
+        "world_lore": world.model_dump(mode="json"),
+        "computed_outcome": outcome,
+        "finished_mission": finished_mission,
+        "mission_cast": cast,
+        "available_characters": [c.id for c in world.autonomous_players],
+        "live_stats": {
+            cid: {k: v for k, v in (s.get("stats") or {}).items()}
+            for cid, s in character_states.items()
+        },
+        "world_events": events,
+        "output_schema": {
+            "actions": [
+                {
+                    "character": "bible character id (NOT in mission_cast)",
+                    "action": "str - what they did off-screen",
+                    "effects": [
+                        {
+                            "stat": "str - one of the 7 canonical stats",
+                            "delta": "int - small drift (-2..+2)",
+                            "reason": "str - in-world justification"
+                        }
+                    ]
+                }
+            ]
+        },
+    }
+    return system, user
+
+
 def build_r1_prompt(
     skill_bible: SkillBible,
     player: PlayerSetup,

@@ -277,6 +277,26 @@ class ReconcileOutput(PermissiveModel):
     shift_summary: str = ""
 
 
+class NpcEffect(PermissiveModel):
+    """A permanent stat drift caused by an NPC's off-screen agenda."""
+    stat: str = "stress"
+    delta: int = 0
+    reason: str = ""
+
+
+class NpcAction(PermissiveModel):
+    """R7 - one background action a non-cast NPC took while the player was busy."""
+    character: str
+    action: str = ""
+    effects: list[NpcEffect] = Field(default_factory=list)
+
+
+class WorldTickOutput(PermissiveModel):
+    """R7 (World Tick) - what NPCs did on their own between missions, so the
+    world visibly changes even when the player is focused on one thread."""
+    actions: list[NpcAction] = Field(default_factory=list)
+
+
 # ---------------------------------------------------------------------------
 # Piece 4: Mission state persisted per session
 # ---------------------------------------------------------------------------

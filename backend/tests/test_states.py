@@ -32,8 +32,8 @@ from app import llm_caller, main  # noqa: E402
 from app.types import (  # noqa: E402
     CastProjectionOutput, CharacterBrainOutput, CharacterProjection, CharacterReasoning,
     Commitment, Mission, MissionArchitectOutput, MissionDebrief, MissionEndOutput,
-    NarratorOutput, NextMissionAdjustment, ReconcileOutput, SkillFeedback, StatChange,
-    StatChanges, TurnRequest, WorldEffect,
+    NarratorOutput, NextMissionAdjustment, NpcAction, NpcEffect, ReconcileOutput,
+    SkillFeedback, StatChange, StatChanges, TurnRequest, WorldEffect, WorldTickOutput,
 )
 
 CALLS: list[str] = []
@@ -85,6 +85,15 @@ def _fake_model(agent):
             material_shift=True,
             shift_summary="Matsuda told you he will ask Chief Soichiro about you - your next step centers on him.",
         )
+    if agent == "world_tick":
+        return WorldTickOutput(actions=[
+            NpcAction(character="RYUK",
+                      action="floated overhead, quietly amused by the mortal's scheming",
+                      effects=[NpcEffect(stat="stress", delta=1, reason="Amused by watching")]),
+            NpcAction(character="LIGHT",
+                      action="studied the player's background file in private",
+                      effects=[NpcEffect(stat="stress", delta=1, reason="Light is uneasy about the new arrival")]),
+        ])
     if agent == "listener":
         return SkillFeedback(did_use_concept=False)
     if agent.startswith("brain:"):
@@ -347,6 +356,15 @@ def run_checks():
     check(row.mission_state.get("reconcile_shift") is None,
           "no world shift without open commitments (no scenario_director call)")
 
+    # R7 world tick: non-cast NPCs kept living their lives during the mission
+    check("world_tick" in CALLS, "R7 ran on mission win (NPCs did things off-screen)")
+    check(any(e.startswith("Meanwhile,") for e in row.mission_state.get("events", [])),
+          "off-screen NPC actions logged as 'Meanwhile' world events")
+    check(row.character_states["RYUK"]["stats"]["stress"] >= 1,
+          "world tick persisted a stat drift on a non-cast NPC (Ryuk)")
+    check(row.character_states["L"]["stats"]["suspicion_towards_player"] == 5,
+          "world tick never touched L (next mission's stats stay fair)")
+
     # enter M2 -> the OUTLINE is fleshed out at entry time (mission_flesher)
     CALLS.clear()
     r = main._run_turn(TurnRequest(session_id=sid, action="enter_mission", new_player_input=""))
@@ -428,6 +446,7 @@ def run_checks():
     check(r.debrief is not None and "what will you do now" in r.debrief.message,
           "failure debrief asks the player for a new plan")
     check("mission_end" in CALLS, "R4 ran on mission failure")
+    check("world_tick" in CALLS, "R7 ran on mission failure too (world keeps moving)")
     row = db_module.get_session(harsh_sid)
     check(row.mission_state.get("plan_flopped") is True,
           "plan marked as flopped (chain voided)")
