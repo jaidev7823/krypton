@@ -199,15 +199,21 @@ def build_r0_prompt(
 ) -> tuple[str, dict]:
     system = (
         "You are the Mission Architect for a simulation world.\n"
-        "Your only job is to turn the PLAYER'S OWN plan into a concrete mission chain.\n"
+        "Your only job is to turn the PLAYER'S OWN plan into a mission chain.\n"
         "Rules:\n"
-        "- Break the player's own_plan into 4-5 winnable missions that lead to their goal.\n"
-        "- Each mission has a location, a clear objective with a stat goal, a reward, and the exact bible characters present.\n"
+        "- Break the player's own_plan into 4-5 missions that lead to their goal.\n"
+        "- TWO-TIER PLANNING: only the FIRST mission is concrete and playable. Later missions are ROUGH OUTLINES - "
+        "the world is alive and dialogue may change what happens next, so do NOT over-specify the future.\n"
+        "  * The FIRST mission (id 1) gets FULL detail: location, objective, reward, exact characters, and "
+        "  win_conditions + fail_conditions (see stat rules below). This is what the player plays immediately.\n"
+        "  * Every LATER mission (id 2+) is an OUTLINE: set detail_level 'outline', give it a title, a ONE-LINE "
+        "  description of its purpose, and the rough characters it will involve. Leave objective, reward, "
+        "  win_conditions and fail_conditions EMPTY/[] - they will be generated when the mission actually begins.\n"
         "- 'characters' MUST only use ids from the world bible's autonomous_players. Never invent characters.\n"
         "- Missions escalate: earlier missions are low-stakes (a single character), later ones raise the stakes.\n"
         "- Read current_character_states: those are the LIVE stats/goals/current problems AFTER the cast was projected. "
-        "Mission objectives must reference the current values (e.g. 'Raise Matsuda trust from 2 to 7').\n"
-        "- EVERY mission MUST define win_conditions and fail_conditions, using the short stat names "
+        "The first mission's objective must reference the current values (e.g. 'Raise Matsuda trust from 2 to 7').\n"
+        "- The FIRST mission MUST define win_conditions and fail_conditions, using the short stat names "
         "(trust, familiarity, respect, suspicion, rapport, disclosure_level, stress) and bible character ids.\n"
         "  * win_conditions: the stat values that mean the objective is achieved, e.g. "
         "[{\"character\": \"MATSUDA\", \"stat\": \"trust\", \"min\": 5}]. Use 'min' for 'raise to at least X' "
@@ -240,12 +246,13 @@ def build_r0_prompt(
                 {
                     "id": "int - 1-based sequence number",
                     "title": "str - short mission name",
-                    "description": "str - what must happen in-world",
+                    "description": "str - mission 1: what must happen in-world; later missions: ONE-LINE purpose only",
                     "why_important": "str - how it serves the player's goal",
+                    "detail_level": "str - 'detailed' for mission 1; 'outline' for every later mission",
                     "location": "str - in-world place",
                     "characters": ["bible character ids present in this mission"],
-                    "objective": "str - measurable goal e.g. 'Raise Matsuda trust from 2 to 7'",
-                    "reward": "str - what the player gains on success",
+                    "objective": "str - measurable goal e.g. 'Raise Matsuda trust from 2 to 7' (OUTLINE missions: empty string)",
+                    "reward": "str - what the player gains on success (OUTLINE missions: empty string)",
                     "win_conditions": [
                         {
                             "character": "bible character id",
@@ -272,6 +279,152 @@ def build_r0_prompt(
 # ---------------------------------------------------------------------------
 # R1: Listener / Teacher
 # ---------------------------------------------------------------------------
+
+def build_flesh_prompt(
+    player: PlayerSetup,
+    world: WorldBible,
+    outline: dict[str, Any],
+    character_states: dict[str, Any],
+    commitments: list[dict[str, Any]],
+    events: list[str],
+) -> tuple[str, dict]:
+    """Turn a ROUGH OUTLINE mission into a fully playable one, right before the
+    player enters it, so the detail can use the CURRENT live world state."""
+    live = {}
+    for cid, s in (character_states or {}).items():
+        live[cid] = {
+            "goal": s.get("goal", ""),
+            "current_problem": s.get("current_problem", ""),
+            "solution": s.get("solution", ""),
+            "stats": s.get("stats", {}),
+        }
+    system = (
+        "You are the Mission Architect, fleshing out ONE mission the player is about to enter.\n"
+        "Rules:\n"
+        "- This mission was previously only an OUTLINE (title + rough purpose + rough cast). Fill in the details now, "
+        "using the CURRENT live stats and anything the characters promised (commitments) or did (world events).\n"
+        "- Keep the mission's title and purpose; make the concrete objective, reward, location and characters concrete.\n"
+        "- 'characters' MUST only use ids from the world bible's autonomous_players. Never invent characters.\n"
+        "- The objective MUST reference the current stat values (e.g. 'Raise Matsuda trust from 3 to 6').\n"
+        "- Define win_conditions and fail_conditions using the short stat names "
+        "(trust, familiarity, respect, suspicion, rapport, disclosure_level, stress):\n"
+        "  * win_conditions: e.g. [{\"character\": \"MATSUDA\", \"stat\": \"trust\", \"min\": 6}] - 'min' to raise, 'max' to lower.\n"
+        "  * fail_conditions: the point where the character walks away or kicks the player out, e.g. "
+        "[{\"character\": \"MATSUDA\", \"stat\": \"trust\", \"max\": 1}].\n"
+        "- If an open commitment from a character in this mission points at a specific action (e.g. 'I'll ask Chief "
+        "Soichiro'), make the objective about following through on that promise.\n"
+        "- Do NOT write dialogue or narration.\n"
+        "- Output ONLY JSON matching the schema exactly. No extra text, no markdown."
+    )
+    user = {
+        "task": "Flesh out this outline mission into a playable mission.",
+        "outline_mission": outline,
+        "player": player.model_dump(mode="json"),
+        "player_own_plan": player.own_plan,
+        "world_lore": world.model_dump(mode="json"),
+        "available_characters": [c.id for c in world.autonomous_players],
+        "current_character_states": live,
+        "commitments": commitments,
+        "world_events": events,
+        "output_schema": {
+            "mission_chain": [
+                {
+                    "id": "int - keep the outline's id",
+                    "title": "str - short mission name",
+                    "description": "str - what must happen in-world",
+                    "why_important": "str - how it serves the player's goal",
+                    "detail_level": "str - 'detailed'",
+                    "location": "str - in-world place",
+                    "characters": ["bible character ids present in this mission"],
+                    "objective": "str - measurable goal referencing current stats",
+                    "reward": "str - what the player gains on success",
+                    "win_conditions": [
+                        {
+                            "character": "bible character id",
+                            "stat": "short stat name",
+                            "min": "int - optional; stat must be >= this value to win",
+                            "max": "int - optional; stat must be <= this value to win"
+                        }
+                    ],
+                    "fail_conditions": [
+                        {
+                            "character": "bible character id",
+                            "stat": "short stat name",
+                            "min": "int - optional; stat reaching this means the character is overwhelmed",
+                            "max": "int - optional; stat dropping to this means the character gives up on you"
+                        }
+                    ],
+                }
+            ]
+        },
+    }
+    return system, user
+
+
+def build_reconcile_prompt(
+    player: PlayerSetup,
+    world: WorldBible,
+    outcome: str,
+    finished_conversation: list[dict[str, str]],
+    commitments: list[dict[str, Any]],
+    remaining_outline: list[dict[str, Any]],
+    events: list[str],
+) -> tuple[str, dict]:
+    """R6 (Scenario Director): after a mission ends, re-align the rough outline
+    with what actually happened - promises made in dialogue now shape the next
+    scenario instead of a rigid pre-fixed order."""
+    system = (
+        "You are the Scenario Director of a living world simulation.\n"
+        "Your job: keep the player's plan on track while letting dialogue change what happens next.\n"
+        "Rules:\n"
+        "- The player has a HIGH-LEVEL plan. The remaining missions are only rough outlines - mutable.\n"
+        "- The just-finished conversation may contain commitments characters made (see commitments, status 'open').\n"
+        "- Decide whether the NEXT outline mission should be revised to follow through on open commitments, "
+        "or stay as-is. Only revise when a commitment genuinely redirects the situation "
+        "(e.g. Matsuda promised to ask Chief Soichiro -> the next mission should involve Soichiro).\n"
+        "- Set material_shift=true ONLY when you changed the next mission because of something in dialogue. "
+        "If the outline already matches, keep it and material_shift=false.\n"
+        "- shift_summary: one player-facing sentence about what changed, e.g. "
+        "'Matsuda told you he will ask Chief Soichiro about you, so your next step centers on him.' "
+        "Empty if material_shift is false.\n"
+        "- Update every commitment's status: 'fulfilled' if the character followed through this mission, "
+        "'broken' if the character clearly abandoned it, otherwise keep 'open'. Return the full list.\n"
+        "- revised_next: the revised detail for the NEXT mission only (keep id). null to leave it unchanged.\n"
+        "- 'characters' in revised_next MUST only use ids from the world bible's autonomous_players.\n"
+        "- Output ONLY JSON matching the schema exactly. No extra text, no markdown."
+    )
+    user = {
+        "task": "Reconcile the remaining plan with what just happened.",
+        "player": player.model_dump(mode="json"),
+        "player_own_plan": player.own_plan,
+        "world_lore": world.model_dump(mode="json"),
+        "computed_outcome": outcome,
+        "available_characters": [c.id for c in world.autonomous_players],
+        "finished_conversation": finished_conversation,
+        "commitments": commitments,
+        "remaining_outline": remaining_outline,
+        "world_events": events,
+        "output_schema": {
+            "revised_next": {
+                "title": "str - revised name for the next mission (or unchanged)",
+                "description": "str - one-line purpose for the next mission",
+                "location": "str - where it happens",
+                "characters": ["bible character ids"]
+            },
+            "commitments": [
+                {
+                    "character": "bible character id",
+                    "target_character": "bible character id (or empty)",
+                    "about": "str - short promise summary",
+                    "status": "str - 'open' | 'fulfilled' | 'broken'"
+                }
+            ],
+            "material_shift": "bool - did dialogue actually change the next mission?",
+            "shift_summary": "str - one player-facing sentence; empty if no shift"
+        },
+    }
+    return system, user
+
 
 def build_r1_prompt(
     skill_bible: SkillBible,
@@ -377,6 +530,7 @@ def build_r2_prompt(
             },
             "inner_thought": "str - private thought",
             "dialogue": "str - what you say out loud",
+            "commitment_made": "null - normally null. Set it ONLY if this turn you explicitly promise the player a concrete future action (e.g. 'I'll talk to Chief Soichiro about you'). Format: {character: your id, target_character: the bible id you'll go to (empty if just the player), about: short promise summary, status: 'open'}. Never invent promises you do not actually make in your dialogue.",
             "memory": "str - your REWRITTEN running memory: merge what you already remembered with what just happened now into one compact first-person summary (<~120 words); never deny world_events facts; if you leave, the summary must record it and why",
             "stat_changes": {
                 "trust": {"delta": "int", "reason": "str"},

@@ -18,6 +18,7 @@ const config: Config = {
         accent: "var(--accent)",
         trust: "var(--trust)",
         suspicion: "var(--suspicion)",
+        shift: "var(--shift)",
       },
     },
   },

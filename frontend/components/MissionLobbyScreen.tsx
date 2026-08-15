@@ -10,12 +10,25 @@ export function MissionLobbyScreen() {
   const isLoading = useGameStore((s) => s.isLoading);
   const error = useGameStore((s) => s.error);
   const startMission = useGameStore((s) => s.startMission);
+  const requestRevision = useGameStore((s) => s.requestRevision);
+  const shiftNotice = useGameStore((s) => s.shiftNotice);
 
   const recap = entries.filter((e) => e.kind === "narration").pop();
 
   return (
     <div className="min-h-screen bg-bg p-4 sm:p-8">
       <div className="mx-auto flex max-w-2xl flex-col gap-4">
+        {shiftNotice && (
+          <motion.div
+            initial={{ opacity: 0, y: 10 }}
+            animate={{ opacity: 1, y: 0 }}
+            className="rounded-xl border border-shift bg-shift/10 p-4"
+          >
+            <p className="text-xs font-semibold uppercase tracking-wide text-shift">World shift</p>
+            <p className="mt-1 text-sm text-ink">{shiftNotice}</p>
+          </motion.div>
+        )}
+
         {recap && recap.text && (
           <motion.div
             initial={{ opacity: 0, y: 10 }}
@@ -82,6 +95,15 @@ export function MissionLobbyScreen() {
             className="mt-6 w-full rounded-lg bg-accent px-4 py-2.5 text-sm font-semibold text-white transition hover:bg-accent/90 disabled:opacity-50"
           >
             {isLoading ? "Entering…" : "Enter Mission"}
+          </button>
+
+          <button
+            type="button"
+            onClick={requestRevision}
+            disabled={isLoading}
+            className="mt-3 w-full rounded-lg border border-edge bg-surface px-4 py-2.5 text-sm font-medium text-muted transition hover:text-ink disabled:opacity-50"
+          >
+            Revise plan
           </button>
         </motion.div>
       </div>

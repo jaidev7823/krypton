@@ -31,12 +31,13 @@ SQLModel.metadata.create_all(db_module.engine)
 from app import llm_caller, main  # noqa: E402
 from app.types import (  # noqa: E402
     CastProjectionOutput, CharacterBrainOutput, CharacterProjection, CharacterReasoning,
-    Mission, MissionArchitectOutput, MissionDebrief, MissionEndOutput, NarratorOutput,
-    SkillFeedback, StatChange, StatChanges, TurnRequest, WorldEffect,
+    Commitment, Mission, MissionArchitectOutput, MissionDebrief, MissionEndOutput,
+    NarratorOutput, NextMissionAdjustment, ReconcileOutput, SkillFeedback, StatChange,
+    StatChanges, TurnRequest, WorldEffect,
 )
 
 CALLS: list[str] = []
-BRAIN_MODE = {"fail": False}
+BRAIN_MODE = {"fail": False, "commit": False}
 END_MODE = {"severity": "mild"}
 NARRATOR_LEAVE_ALL = {"on": False}
 
@@ -62,12 +63,28 @@ def _fake_model(agent):
                     location="Cafeteria", characters=["MATSUDA"],
                     win_conditions=[{"character": "MATSUDA", "stat": "trust", "min": 6}],
                     fail_conditions=[{"character": "MATSUDA", "stat": "trust", "max": 1}]),
+            Mission(id=2, title="Earn L's attention", detail_level="outline",
+                    description="Lower L's suspicion and earn his interest.",
+                    location="Class 3B", characters=["L"]),
+        ])
+    if agent == "mission_flesher":
+        return MissionArchitectOutput(mission_chain=[
             Mission(id=2, title="Earn L's attention", description="Get noticed",
                     objective="Lower L suspicion to 3", reward="L's interest",
                     location="Class 3B", characters=["L"],
                     win_conditions=[{"character": "L", "stat": "suspicion", "max": 3}],
                     fail_conditions=[{"character": "L", "stat": "suspicion", "min": 7}]),
         ])
+    if agent == "scenario_director":
+        return ReconcileOutput(
+            revised_next=NextMissionAdjustment(
+                title="Chief Soichiro's ear", description="Matsuda promised to ask Chief Soichiro about you.",
+                location="NPA Headquarters", characters=["SOICHIRO"]),
+            commitments=[Commitment(character="MATSUDA", target_character="SOICHIRO",
+                                    about="ask Chief Soichiro about the player", status="fulfilled")],
+            material_shift=True,
+            shift_summary="Matsuda told you he will ask Chief Soichiro about you - your next step centers on him.",
+        )
     if agent == "listener":
         return SkillFeedback(did_use_concept=False)
     if agent.startswith("brain:"):
@@ -105,6 +122,9 @@ def _fake_model(agent):
             dialogue=f"{cid} speaks",
             memory=f"A stranger came up to me and said hello - I answered, we are still talking.",
             inner_thought=f"{cid} thinks",
+            commitment_made=(Commitment(character=cid, target_character="SOICHIRO",
+                                        about="ask Chief Soichiro about the player", status="open")
+                             if BRAIN_MODE["commit"] and cid == "MATSUDA" else None),
             stat_changes=StatChanges(
                 trust=StatChange(delta=1, reason="Player was friendly"),
                 familiarity=StatChange(delta=1, reason="Player shared background"),
@@ -322,14 +342,70 @@ def run_checks():
     mem = row.character_states["MATSUDA"]["memory"]
     check(len(mem) == 1 and "referral" in mem[0],
           "R4 rewrites MATSUDA memory into one merged summary (win payoff folded in)")
+    check(row.mission_state["current"]["detail_level"] == "outline",
+          "M2 kept as a rough OUTLINE after M1 won (fleshed later, not pre-written)")
+    check(row.mission_state.get("reconcile_shift") is None,
+          "no world shift without open commitments (no scenario_director call)")
 
-    # enter M2 -> L suspicion needs to drop to 3 (5 -> 4 on turn 1 -> still live)
+    # enter M2 -> the OUTLINE is fleshed out at entry time (mission_flesher)
+    CALLS.clear()
     r = main._run_turn(TurnRequest(session_id=sid, action="enter_mission", new_player_input=""))
     check(r.game_state == "live_mission", "M2 entered")
+    check("mission_flesher" in CALLS, "outline mission fleshed on entry (mission_flesher ran)")
+    row = db_module.get_session(sid)
+    check(row.mission_state["current"]["detail_level"] == "detailed"
+          and row.mission_state["current"]["win_conditions"],
+          "M2 now fully detailed with stat conditions after fleshing")
     r = main._run_turn(TurnRequest(session_id=sid, new_player_input="engage L"))
     check(r.game_state == "live_mission", "M2 turn 1 stays live (suspicion 4 > 3)")
     r = main._run_turn(TurnRequest(session_id=sid, new_player_input="disarm L"))
     check(r.game_state == "complete", "M2 suspicion hits 3 -> complete")
+
+    # ---- COMMITMENT PATH: a dialogue promise reshapes the next mission ----
+    r = main._run_turn(TurnRequest(player_setup=json.loads(json.dumps(setup_json())),
+                                   new_player_input="", action="start"))
+    c_sid = r.session_id
+    main._run_turn(TurnRequest(session_id=c_sid, action="submit_plan",
+                               plan_text="Get close to Matsuda"))
+    main._run_turn(TurnRequest(session_id=c_sid, action="enter_mission", new_player_input=""))
+    BRAIN_MODE["commit"] = True
+    main._run_turn(TurnRequest(session_id=c_sid, new_player_input="Promise Matsuda help"))
+    row = db_module.get_session(c_sid)
+    check(any(c["about"] == "ask Chief Soichiro about the player" for c in row.mission_state.get("commitments", [])),
+          "dialogue promise captured into the commitments ledger")
+    check(any("committed" in e for e in row.mission_state.get("events", [])),
+          "new commitment logged as a world event")
+    # WIN with an open commitment -> R6 Scenario Director revises M2.
+    # (The same promise fires again on this turn but is deduped, so the ledger
+    # still holds exactly one open entry.)
+    CALLS.clear()
+    main._run_turn(TurnRequest(session_id=c_sid, new_player_input="A perfect accusation audit"))
+    check("scenario_director" in CALLS, "R6 ran on win because an open commitment exists")
+    check("mission_end" in CALLS, "R4 still ran on mission win")
+    row = db_module.get_session(c_sid)
+    check(len([c for c in row.mission_state.get("commitments", []) if c["about"] == "ask Chief Soichiro about the player"]) == 1,
+          "commitment deduped by who+what (no duplicate ledger rows)")
+    nxt = [m for m in row.mission_state["chain"] if m["id"] == 2][0]
+    check(nxt["title"] == "Chief Soichiro's ear", "R6 rewrote M2 title to follow the promise")
+    check(nxt["characters"] == ["SOICHIRO"], "R6 re-cast M2 around the promised target")
+    check(row.mission_state["current"]["detail_level"] == "outline",
+          "revised M2 still an outline until entered")
+    check(any("WORLD SHIFT" in e for e in row.mission_state.get("events", [])),
+          "material shift broadcast as a world event")
+    # lobby response surfaces the shift for the player to see
+    r = main._run_turn(TurnRequest(session_id=c_sid, new_player_input=""))
+    check(r.reconcile_shift is not None and "Chief Soichiro" in r.reconcile_shift,
+          "lobby surfaces the world shift (reconcile_shift)")
+    # commitments survive a voluntary re-plan
+    main._run_turn(TurnRequest(session_id=c_sid, action="revise_plan", new_player_input=""))
+    row = db_module.get_session(c_sid)
+    check(row.mission_state.get("plan_flopped") is True and row.mission_state.get("chain") == [],
+          "revise_plan voids the chain like a flop")
+    check(len(row.mission_state.get("commitments", [])) == 1,
+          "commitments persist across a plan revision (loose coupling)")
+    check(row.mission_state.get("reconcile_shift") is None,
+          "revise_plan clears the stale shift banner")
+    BRAIN_MODE["commit"] = False
 
     # defensive: calling turn with no plan and no action returns elicitation
     r = main._run_turn(TurnRequest(player_setup=json.loads(json.dumps(setup_json())),

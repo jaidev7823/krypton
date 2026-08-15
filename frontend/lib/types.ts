@@ -147,6 +147,7 @@ export interface TurnResponse {
   world?: WorldBible | null;
   debrief?: MissionDebrief | null;
   events?: string[];
+  reconcile_shift?: string | null;
 }
 
 export interface AudioResponse {

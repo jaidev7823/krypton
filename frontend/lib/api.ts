@@ -32,6 +32,14 @@ export function enterMission(sessionId: string): Promise<TurnResponse> {
   });
 }
 
+export function openRevision(sessionId: string): Promise<TurnResponse> {
+  return post<TurnResponse>("/api/turn", {
+    session_id: sessionId,
+    action: "revise_plan",
+    new_player_input: "",
+  });
+}
+
 export function revisePlan(sessionId: string, planText: string): Promise<TurnResponse> {
   return post<TurnResponse>("/api/turn", {
     session_id: sessionId,

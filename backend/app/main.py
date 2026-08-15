@@ -26,11 +26,13 @@ from .db import create_session, get_session, last_turn_number, save_session_stat
 from .merge_turn import merge_turn
 from .prompt_builder import (
     build_cast_prompt,
+    build_flesh_prompt,
     build_r0_prompt,
     build_r1_prompt,
     build_r2_prompt,
     build_r3_prompt,
     build_r4_prompt,
+    build_reconcile_prompt,
 )
 from .types import (
     CastProjectionOutput,
@@ -44,6 +46,7 @@ from .types import (
     MissionEndOutput,
     NarratorOutput,
     PlayerSetup,
+    ReconcileOutput,
     SkillBible,
     SkillFeedback,
     TurnRequest,
@@ -254,6 +257,34 @@ def apply_world_effects(character_states: dict, effects) -> None:
     return None
 
 
+def _commitment_key(c: dict) -> str:
+    return f"{c.get('character', '')}|{c.get('target_character', '')}|{c.get('about', '')}"
+
+
+def apply_commitments(mission_state: dict, r2_outputs: list[CharacterBrainOutput]) -> None:
+    """Collect explicit commitments characters made this turn into the ledger.
+
+    A commitment only enters the ledger once (dedup by who/what). Each new one
+    is logged as a world event so it reads as an undeniable fact.
+    """
+    ledger = mission_state.setdefault("commitments", [])
+    events = mission_state.setdefault("events", [])
+    for out in r2_outputs:
+        c = out.commitment_made
+        if not c or not c.character or not c.about.strip():
+            continue
+        entry = {
+            "character": c.character,
+            "target_character": (c.target_character or ""),
+            "about": c.about.strip(),
+            "status": c.status or "open",
+        }
+        if any(_commitment_key(x) == _commitment_key(entry) for x in ledger):
+            continue
+        ledger.append(entry)
+        events.append(f"{entry['character']} committed: {entry['about']}.")
+
+
 def apply_mission_state(mission_state: dict, r3: NarratorOutput) -> bool:
     """Advance the fixed mission chain. The caller has already decided the
     mission was won via the deterministic stat thresholds (mission_outcome);
@@ -278,6 +309,93 @@ def apply_mission_state(mission_state: dict, r3: NarratorOutput) -> bool:
     else:
         mission_state["current"] = None
     return True
+
+
+def _flesh_mission(
+    player: PlayerSetup,
+    world: WorldBible,
+    mission_state: dict,
+    character_states: dict,
+    on_attempt=None,
+) -> None:
+    """Flesh out the current OUTLINE mission into a playable one, at entry time.
+
+    Uses the CURRENT live stats + commitments + events so the objective can
+    follow through on promises made in earlier dialogue.
+    """
+    current = mission_state.get("current")
+    if not current or current.get("detail_level") != "outline":
+        return
+    commit = mission_state.get("commitments") or []
+    events = mission_state.get("events") or []
+    flesh_system, flesh_user = build_flesh_prompt(
+        player, world, current, character_states, commit, events
+    )
+    flesh = llm_caller.call_json(
+        flesh_system, flesh_user, MissionArchitectOutput,
+        agent="mission_flesher",
+        on_attempt=on_attempt("mission_flesher") if on_attempt else None,
+    )
+    chain = mission_state.get("chain") or []
+    for m in flesh.mission_chain:
+        if m.id == current.get("id"):
+            m.status = current.get("status", "lobby")
+            m.detail_level = "detailed"
+            idx = next((i for i, x in enumerate(chain) if x.get("id") == m.id), None)
+            chain[idx] = m.model_dump(mode="json")
+            mission_state["current"] = chain[idx]
+            return
+    # Flesher produced nothing usable -> keep the outline playable (fallback
+    # verdict path) rather than hard-failing the game.
+    current["detail_level"] = "detailed"
+
+
+def _reconcile_next(
+    player: PlayerSetup,
+    world: WorldBible,
+    mission_state: dict,
+    character_states: dict,
+    outcome: str,
+    conversation: list[dict[str, str]],
+    on_attempt=None,
+) -> None:
+    """R6 (Scenario Director): after a mission ends, re-align the rough outline
+    with what actually happened, so dialogue promises shape the next scenario.
+
+    Only runs when there are open commitments worth honoring. Never changes the
+    win/lose math - it only rewrites WHICH scene comes next.
+    """
+    commitments = mission_state.get("commitments") or []
+    open_commitments = [c for c in commitments if c.get("status") == "open"]
+    if not open_commitments:
+        return
+    chain = mission_state.get("chain") or []
+    current_id = (mission_state.get("current") or {}).get("id")
+    idx = next((i for i, m in enumerate(chain) if m.get("id") == current_id), -1)
+    nxt = chain[idx + 1] if idx >= 0 and idx + 1 < len(chain) else None
+    remaining = [m for m in chain[idx + 1:] if m.get("detail_level") == "outline"]
+    if not remaining:
+        return
+    rec_system, rec_user = build_reconcile_prompt(
+        player, world, outcome, conversation, commitments, remaining,
+        mission_state.get("events") or [],
+    )
+    rec = llm_caller.call_json(
+        rec_system, rec_user, ReconcileOutput,
+        agent="scenario_director",
+        on_attempt=on_attempt("scenario_director") if on_attempt else None,
+    )
+    if rec.commitments:
+        cleaned = [c.model_dump(mode="json") for c in rec.commitments if c.character]
+        mission_state["commitments"] = cleaned
+    if rec.revised_next and nxt is not None:
+        nxt["title"] = rec.revised_next.title or nxt.get("title", "")
+        nxt["description"] = rec.revised_next.description or nxt.get("description", "")
+        nxt["location"] = rec.revised_next.location or nxt.get("location", "")
+        nxt["characters"] = rec.revised_next.characters or nxt.get("characters", [])
+    if rec.material_shift and rec.shift_summary.strip():
+        mission_state["reconcile_shift"] = rec.shift_summary.strip()
+        mission_state.setdefault("events", []).append(f"WORLD SHIFT: {rec.shift_summary.strip()}")
 
 
 def _make_agent_logger(session_id: str, turn_number: int):
@@ -412,9 +530,22 @@ def _run_turn(body: TurnRequest) -> TurnResponse:
     # ------------------------------------------------------------------
     if current.get("status") in ("lobby", "failed"):
         if action == "enter_mission":
+            # Outline missions are fleshed out NOW so the playable detail can
+            # use the latest stats + any promises made in earlier dialogue.
+            _flesh_mission(player, world, mission_state, character_states, on_attempt=on_attempt)
+            current = mission_state["current"]
             current["status"] = "active"
             save_session_state(row.id, mission_state, character_states, conversation)
             return _live_response(row.id, mission_state, player)
+        if action == "revise_plan":
+            # Voluntary re-plan: same semantics as a plan flop - the chain is
+            # voided but stats/memories/commitments survive.
+            mission_state["plan_flopped"] = True
+            mission_state["chain"] = []
+            mission_state["current"] = None
+            mission_state["reconcile_shift"] = None
+            save_session_state(row.id, mission_state, character_states, conversation)
+            return _plan_revision_response(row.id, mission_state, player, world)
         return _lobby_response(row.id, mission_state, player, world)
 
     # ------------------------------------------------------------------
@@ -496,9 +627,18 @@ def _build_mission_chain(
     if not chain:
         raise HTTPException(500, "Mission Architect returned an empty mission chain")
     chain[0]["status"] = "lobby"
+    chain[0]["detail_level"] = "detailed"
+    for m in chain[1:]:
+        m["detail_level"] = "outline"
+        m.setdefault("objective", "")
+        m.setdefault("reward", "")
+        m.setdefault("win_conditions", [])
+        m.setdefault("fail_conditions", [])
     mission_state["chain"] = chain
     mission_state["current"] = chain[0]
     mission_state["history"] = mission_state.get("history") or []
+    mission_state.setdefault("commitments", [])
+    mission_state["reconcile_shift"] = None
     return mission_state
 
 def _mission_turn(turn_id: int, mission_state: dict, narration: str) -> GameTurn:
@@ -545,7 +685,8 @@ def _lobby_response(session_id: str, mission_state: dict, player: PlayerSetup, w
     chain = mission_state.get("chain") or []
     return TurnResponse(session_id=session_id, turn=turn, game_state="mission_lobby",
                         mission_chain=[Mission.model_validate(m) for m in chain], world=world,
-                        events=mission_state.get("events") or [])
+                        events=mission_state.get("events") or [],
+                        reconcile_shift=mission_state.get("reconcile_shift"))
 
 
 def _plan_revision_response(
@@ -668,6 +809,8 @@ def _run_live_turn(
     # Apply state changes FIRST so the mission verdict reads the post-turn stats.
     for out in r2_outputs:
         apply_r2(character_states, out)
+    # Hooks ledger: explicit promises made this turn (deduped + logged as events).
+    apply_commitments(mission_state, r2_outputs)
     # Presence is ALWAYS the mission cast - ignore R3's scene_update so the
     # model can never drag in characters that are not part of the mission.
     _sync_presence(character_states, present_ids)
@@ -723,6 +866,13 @@ def _run_live_turn(
             mission_state.setdefault("events", []).append(r4.event_log.strip())
 
     if outcome == "won":
+        # R6 - Scenario Director FIRST (while `current` is still the finished
+        # mission): re-align the next rough outline with commitments made in
+        # dialogue, then let apply_mission_state advance onto the revised entry.
+        _reconcile_next(
+            player, world, mission_state, character_states, outcome,
+            turn_conversation, on_attempt=on_attempt,
+        )
         apply_mission_state(mission_state, r3)
     elif outcome == "failed":
         # PLAN FLOP: the whole chain is void - the world keeps the damage and

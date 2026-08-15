@@ -1,7 +1,7 @@
 "use client";
 
 import { create } from "zustand";
-import { enterMission, getAudio, nextTurn, revisePlan, startGame } from "@/lib/api";
+import { enterMission, getAudio, nextTurn, openRevision, revisePlan, startGame } from "@/lib/api";
 import type {
   ChatEntry,
   CoachNotice,
@@ -27,6 +27,7 @@ interface GameStateStore {
   world: WorldBible | null;
   debrief: MissionDebrief | null;
   events: string[];
+  shiftNotice: string | null;
   notices: CoachNotice[];
   isLoading: boolean;
   error: string | null;
@@ -39,6 +40,7 @@ interface GameStateStore {
   startMission: () => Promise<void>;
   sendMessage: (text: string) => Promise<void>;
   submitNewPlan: (planText: string) => Promise<void>;
+  requestRevision: () => Promise<void>;
   selectCharacter: (id: string | null) => void;
   toggleAudio: () => void;
   openCoach: (skill: Skill | null) => void;
@@ -115,6 +117,7 @@ function applyTurn(set: (fn: (s: GameStateStore) => Partial<GameStateStore>) => 
       mission: res.turn.mission,
       debrief: res.debrief ?? null,
       events: res.events && res.events.length > 0 ? res.events : s.events,
+      shiftNotice: res.reconcile_shift ?? null,
       notices: newNotices.length > 0 ? [...newNotices, ...s.notices].slice(0, 30) : s.notices,
       coachSkill: res.turn.coach ?? null,
     };
@@ -132,6 +135,7 @@ export const useGameStore = create<GameStateStore>((set, get) => ({
   world: null,
   debrief: null,
   events: [],
+  shiftNotice: null,
   notices: [],
   isLoading: false,
   error: null,
@@ -209,6 +213,20 @@ export const useGameStore = create<GameStateStore>((set, get) => ({
     set({ isLoading: true, error: null });
     try {
       const res = await revisePlan(sessionId, planText.trim());
+      applyTurn(set, res);
+    } catch (e) {
+      set({ error: e instanceof Error ? e.message : String(e) });
+    } finally {
+      set({ isLoading: false });
+    }
+  },
+
+  requestRevision: async () => {
+    const { sessionId } = get();
+    if (!sessionId || get().isLoading) return;
+    set({ isLoading: true, error: null });
+    try {
+      const res = await openRevision(sessionId);
       applyTurn(set, res);
     } catch (e) {
       set({ error: e instanceof Error ? e.message : String(e) });

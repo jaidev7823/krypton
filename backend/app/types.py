@@ -184,6 +184,19 @@ class CharacterReasoning(PermissiveModel):
     current_interaction: str = ""
 
 
+class Commitment(PermissiveModel):
+    """An explicit promise a character made to the player in dialogue.
+
+    Hooks the emergent world to the plan: the next scenario should consume
+    open commitments (e.g. Matsuda promised to ask Chief Soichiro) instead of
+    blindly following a pre-fixed chain.
+    """
+    character: str = ""
+    target_character: str = ""
+    about: str = ""
+    status: str = "open"  # open | fulfilled | broken
+
+
 class CharacterBrainOutput(PermissiveModel):
     character_id: str
     reasoning: CharacterReasoning = Field(default_factory=CharacterReasoning)
@@ -191,6 +204,7 @@ class CharacterBrainOutput(PermissiveModel):
     dialogue: str = ""
     memory: str = ""
     stat_changes: StatChanges = Field(default_factory=StatChanges)
+    commitment_made: Optional[Commitment] = None
     current_problem: str = ""
     solution: str = ""
     problem_solving_framework: str = ""
@@ -246,6 +260,23 @@ class MissionEndOutput(PermissiveModel):
     event_log: str = ""
 
 
+class NextMissionAdjustment(PermissiveModel):
+    """R6 - how the next outline mission should be rewritten to consume hooks."""
+    title: str = ""
+    description: str = ""
+    location: str = ""
+    characters: list[str] = Field(default_factory=list)
+
+
+class ReconcileOutput(PermissiveModel):
+    """R6 (Scenario Director) - re-align the rough outline with what actually
+    happened in dialogue, so promises made now shape what happens next."""
+    revised_next: Optional[NextMissionAdjustment] = None
+    commitments: list[Commitment] = Field(default_factory=list)
+    material_shift: bool = False
+    shift_summary: str = ""
+
+
 # ---------------------------------------------------------------------------
 # Piece 4: Mission state persisted per session
 # ---------------------------------------------------------------------------
@@ -256,6 +287,7 @@ class Mission(PermissiveModel):
     description: str = ""
     why_important: str = ""
     status: str = "lobby"
+    detail_level: str = "detailed"  # detailed (playable) | outline (name+purpose+cast, fleshed on entry)
     location: str = ""
     characters: list[str] = Field(default_factory=list)
     objective: str = ""
@@ -363,3 +395,4 @@ class TurnResponse(PermissiveModel):
     world: Optional[WorldBible] = None
     debrief: Optional[MissionDebrief] = None
     events: list[str] = Field(default_factory=list)
+    reconcile_shift: Optional[str] = None
