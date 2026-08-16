@@ -27,6 +27,7 @@ from .merge_turn import merge_turn
 from .prompt_builder import (
     build_cast_prompt,
     build_coach_prompt,
+    build_feasibility_prompt,
     build_flesh_prompt,
     build_r0_prompt,
     build_r1_prompt,
@@ -41,6 +42,7 @@ from .types import (
     CharacterBrainOutput,
     CoachReply,
     CoachRequest,
+    FeasibilityReport,
     GameTurn,
     GameTurnMission,
     GameTurnNarration,
@@ -377,6 +379,8 @@ def _flesh_mission(
         if m.id == current.get("id"):
             m.status = current.get("status", "lobby")
             m.detail_level = "detailed"
+            if not m.reason and current.get("reason"):
+                m.reason = current["reason"]  # the access gate survives the fleshing
             idx = next((i for i, x in enumerate(chain) if x.get("id") == m.id), None)
             chain[idx] = m.model_dump(mode="json")
             mission_state["current"] = chain[idx]
@@ -678,6 +682,34 @@ def _run_cast_projection(
             c["problem_solving_framework"] = p.problem_solving_framework
 
 
+def _run_feasibility(
+    player: PlayerSetup,
+    world: WorldBible,
+    character_states: dict,
+    mission_state: dict,
+    on_attempt=None,
+) -> FeasibilityReport:
+    """R8 World Gate - judge the player's plan against the world's access rules.
+
+    Returns an empty, permissive report if the Gate fails so the game never
+    softlocks on a new agent (R0 then falls back to free-form planning).
+    """
+    try:
+        system, user = build_feasibility_prompt(
+            player, world, character_states,
+            events=mission_state.get("events") or [],
+        )
+        report = llm_caller.call_json(
+            system, user, FeasibilityReport,
+            agent="feasibility_gate",
+            on_attempt=on_attempt("feasibility_gate") if on_attempt else None,
+        )
+        return report
+    except Exception as e:
+        logger.warning("World Gate failed; falling back to free-form planning: %s", e)
+        return FeasibilityReport(feasible=True)
+
+
 def _build_mission_chain(
     player: PlayerSetup,
     world: WorldBible,
@@ -686,7 +718,8 @@ def _build_mission_chain(
     on_attempt=None,
     reproject: bool = True,
 ) -> dict:
-    """STATE 2 - project the cast (R0-Cast), then run the Mission Architect (R0).
+    """STATE 2 - project the cast (R0-Cast), judge feasibility (World Gate),
+    then run the Mission Architect (R0) on the feasible path.
 
     reproject=False is used when the player revises a failed plan: the cast is
     NOT reset - live stats and memories survive so characters remember the
@@ -694,7 +727,14 @@ def _build_mission_chain(
     """
     if reproject:
         _run_cast_projection(player, world, character_states, on_attempt=on_attempt)
-    r0_system, r0_user = build_r0_prompt(player, world, character_states)
+    feasibility = _run_feasibility(
+        player, world, character_states, mission_state, on_attempt=on_attempt
+    )
+    mission_state["feasibility"] = feasibility.model_dump(mode="json")
+    path = [s.model_dump(mode="json") for s in feasibility.path]
+    r0_system, r0_user = build_r0_prompt(
+        player, world, character_states, feasibility_path=path or None
+    )
     r0 = llm_caller.call_json(
         r0_system, r0_user, MissionArchitectOutput,
         agent="mission_architect",
@@ -728,6 +768,7 @@ def _mission_turn(turn_id: int, mission_state: dict, narration: str) -> GameTurn
             title=current.get("title", ""),
             description=current.get("description", ""),
             why_important=current.get("why_important", ""),
+            reason=current.get("reason", ""),
             status=current.get("status", "lobby"),
             chain_progress=chain_progress(mission_state),
             location=current.get("location", ""),
@@ -763,7 +804,9 @@ def _lobby_response(session_id: str, mission_state: dict, player: PlayerSetup, w
     return TurnResponse(session_id=session_id, turn=turn, game_state="mission_lobby",
                         mission_chain=[Mission.model_validate(m) for m in chain], world=world,
                         events=mission_state.get("events") or [],
-                        reconcile_shift=mission_state.get("reconcile_shift"))
+                        reconcile_shift=mission_state.get("reconcile_shift"),
+                        feasibility=FeasibilityReport.model_validate(mission_state["feasibility"])
+                        if mission_state.get("feasibility") else None)
 
 
 def _plan_revision_response(

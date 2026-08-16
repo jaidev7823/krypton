@@ -6,6 +6,7 @@ import type {
   ChatEntry,
   CoachMessage,
   CoachNotice,
+  FeasibilityReport,
   GameState,
   GameTurnCharacter,
   GameTurnMission,
@@ -30,6 +31,7 @@ interface GameStateStore {
   events: string[];
   shiftNotice: string | null;
   notices: CoachNotice[];
+  feasibility: FeasibilityReport | null;
   isLoading: boolean;
   error: string | null;
   audioMuted: boolean;
@@ -124,6 +126,7 @@ function applyTurn(set: (fn: (s: GameStateStore) => Partial<GameStateStore>) => 
       debrief: res.debrief ?? null,
       events: res.events && res.events.length > 0 ? res.events : s.events,
       shiftNotice: res.reconcile_shift ?? null,
+      feasibility: res.feasibility ?? null,
       notices: newNotices.length > 0 ? [...newNotices, ...s.notices].slice(0, 30) : s.notices,
       coachSkill: res.turn.coach ?? null,
     };
@@ -143,6 +146,7 @@ export const useGameStore = create<GameStateStore>((set, get) => ({
   events: [],
   shiftNotice: null,
   notices: [],
+  feasibility: null,
   isLoading: false,
   error: null,
   audioMuted: false,

@@ -28,15 +28,36 @@
       "relationship_dynamics": "Trust builds very slowly and only through repeated proof, consistency and logical soundness; flattery, charm and emotional appeals are useless. Respect is earned through competence and intelligence. Suspicion rises quickly the moment behavior is inconsistent. Regardless of trust level, reveals almost nothing personal or factual about himself.",
       "stat_ladders": {
         "trust": [
-          { "max": 0, "behavior": "Utterly neutral; treats you as data to be observed." },
-          { "max": 2, "behavior": "Polite and clinical; evaluates you like a hypothesis." },
-          { "max": 4, "behavior": "Engaged as a test subject; curious but guarded." },
-          { "max": 6, "behavior": "Cooperative on the case; still reveals nothing personal." },
-          { "max": 8, "behavior": "Treats you as a valued ally in the investigation." },
-          { "max": 10, "behavior": "Rare, profound confidence; nearly impossible to earn." }
+          {
+            "max": 0,
+            "behavior": "Utterly neutral; treats you as data to be observed."
+          },
+          {
+            "max": 2,
+            "behavior": "Polite and clinical; evaluates you like a hypothesis."
+          },
+          {
+            "max": 4,
+            "behavior": "Engaged as a test subject; curious but guarded."
+          },
+          {
+            "max": 6,
+            "behavior": "Cooperative on the case; still reveals nothing personal."
+          },
+          {
+            "max": 8,
+            "behavior": "Treats you as a valued ally in the investigation."
+          },
+          {
+            "max": 10,
+            "behavior": "Rare, profound confidence; nearly impossible to earn."
+          }
         ],
         "disclosure_level": [
-          { "max": 10, "behavior": "Reveals only case-relevant reasoning; never personal facts." }
+          {
+            "max": 10,
+            "behavior": "Reveals only case-relevant reasoning; never personal facts."
+          }
         ]
       },
       "memory_about_player": [],
@@ -50,6 +71,16 @@
         "stress": 0,
         "voice_id": "L",
         "sample_audio_path": "/audio_samples/L.wav"
+      },
+      "access": {
+        "meetability": "secluded",
+        "gate": "Never appears in person - L communicates only through Watari and the NPA Task Force. A direct meeting is impossible until you are inside the investigation.",
+        "where": "Remote, via Watari; task-force briefings on NPA channels",
+        "grants": [
+          "the identity of Kira",
+          "full access to the investigation",
+          "direct credibility"
+        ]
       }
     },
     {
@@ -66,20 +97,56 @@
       "relationship_dynamics": "Outwardly he is friendly, charming and warm almost immediately - but this is a manipulation tool, not trust. His displayed warmth far exceeds his actual trust, which is nearly impossible to earn and grows only when he believes he controls and benefits from you. His apparent openness and disclosure are strategic; he never truly reveals his plans, ideals, or secrets.",
       "stat_ladders": {
         "trust": [
-          { "max": 0, "behavior": "Cold and neutral; minimal disclosure." },
-          { "max": 1, "behavior": "Polite, guarded, mildly interested." },
-          { "max": 3, "behavior": "Comfortable enough for casual conversation." },
-          { "max": 5, "behavior": "Genuine social engagement, some personal disclosure." },
-          { "max": 7, "behavior": "Considerable openness and cooperation." },
-          { "max": 9, "behavior": "Strong personal confidence in you." },
-          { "max": 10, "behavior": "Exceptional trust; a genuine confidant." }
+          {
+            "max": 0,
+            "behavior": "Cold and neutral; minimal disclosure."
+          },
+          {
+            "max": 1,
+            "behavior": "Polite, guarded, mildly interested."
+          },
+          {
+            "max": 3,
+            "behavior": "Comfortable enough for casual conversation."
+          },
+          {
+            "max": 5,
+            "behavior": "Genuine social engagement, some personal disclosure."
+          },
+          {
+            "max": 7,
+            "behavior": "Considerable openness and cooperation."
+          },
+          {
+            "max": 9,
+            "behavior": "Strong personal confidence in you."
+          },
+          {
+            "max": 10,
+            "behavior": "Exceptional trust; a genuine confidant."
+          }
         ],
         "disclosure_level": [
-          { "max": 2, "behavior": "Shares only polite surface conversation; everything is a probe." },
-          { "max": 4, "behavior": "Feigns personal disclosure to gain your confidence." },
-          { "max": 6, "behavior": "Readily volunteers believable personal stories - fabricated to manipulate." },
-          { "max": 8, "behavior": "Speaks openly about his ideals of justice - selective, self-serving truth." },
-          { "max": 10, "behavior": "Reveals his true nature - only when he is sure of absolute control." }
+          {
+            "max": 2,
+            "behavior": "Shares only polite surface conversation; everything is a probe."
+          },
+          {
+            "max": 4,
+            "behavior": "Feigns personal disclosure to gain your confidence."
+          },
+          {
+            "max": 6,
+            "behavior": "Readily volunteers believable personal stories - fabricated to manipulate."
+          },
+          {
+            "max": 8,
+            "behavior": "Speaks openly about his ideals of justice - selective, self-serving truth."
+          },
+          {
+            "max": 10,
+            "behavior": "Reveals his true nature - only when he is sure of absolute control."
+          }
         ]
       },
       "memory_about_player": [],
@@ -93,6 +160,15 @@
         "stress": 0,
         "voice_id": "LIGHT",
         "sample_audio_path": "/audio_samples/LIGHT.wav"
+      },
+      "access": {
+        "meetability": "open",
+        "gate": "A classmate - easy to reach, but he is careful and only opens up through genuine rapport.",
+        "where": "Class 3B, Daikoku Private Academy; student circles after school",
+        "grants": [
+          "insight into student circles",
+          "a window into the task-force family (his father is Chief Yagami)"
+        ]
       }
     },
     {
@@ -109,13 +185,34 @@
       "relationship_dynamics": "Warms quickly to genuine kindness, being taken seriously, and shared excitement. Trust and rapport rise fast, but his anxiety makes him overshare nervously under stress. Easily impressed and easily misled; genuine loyalty once you treat him as a real colleague.",
       "stat_ladders": {
         "trust": [
-          { "max": 0, "behavior": "Awkward, eager to please, holding back." },
-          { "max": 1, "behavior": "Nervously friendly, instantly agreeable." },
-          { "max": 2, "behavior": "Chatty and informal; treats you like a friend." },
-          { "max": 4, "behavior": "Trusting; shares opinions and small secrets openly." },
-          { "max": 6, "behavior": "Genuinely relies on you and looks to you for guidance." },
-          { "max": 8, "behavior": "Devoted; defends you and confides in you readily." },
-          { "max": 10, "behavior": "Absolute, unshakable loyalty." }
+          {
+            "max": 0,
+            "behavior": "Awkward, eager to please, holding back."
+          },
+          {
+            "max": 1,
+            "behavior": "Nervously friendly, instantly agreeable."
+          },
+          {
+            "max": 2,
+            "behavior": "Chatty and informal; treats you like a friend."
+          },
+          {
+            "max": 4,
+            "behavior": "Trusting; shares opinions and small secrets openly."
+          },
+          {
+            "max": 6,
+            "behavior": "Genuinely relies on you and looks to you for guidance."
+          },
+          {
+            "max": 8,
+            "behavior": "Devoted; defends you and confides in you readily."
+          },
+          {
+            "max": 10,
+            "behavior": "Absolute, unshakable loyalty."
+          }
         ]
       },
       "memory_about_player": [],
@@ -129,6 +226,16 @@
         "stress": 0,
         "voice_id": "MATSUDA",
         "sample_audio_path": "/audio_samples/MATSUDA.wav"
+      },
+      "access": {
+        "meetability": "open",
+        "gate": "No barrier - catch him in the NPA lobby at lunch. He is eager for attention and an easy first contact.",
+        "where": "NPA lobby and cafeteria, lunchtime",
+        "grants": [
+          "an introduction to Chief Soichiro Yagami",
+          "small task-force favors",
+          "a foot in the door of the investigation"
+        ]
       }
     },
     {
@@ -154,6 +261,16 @@
         "stress": 0,
         "voice_id": "SOICHIRO",
         "sample_audio_path": "/audio_samples/SOICHIRO.wav"
+      },
+      "access": {
+        "meetability": "guarded",
+        "gate": "Chief Yagami is extremely selective about who he meets. He only sees people vouched for by a Task Force member he trusts (e.g. Matsuda).",
+        "where": "NPA Headquarters, weekday afternoons; rarely outside the building",
+        "grants": [
+          "a place in the Kira Task Force",
+          "access to the classified investigation",
+          "the authority to put you near L"
+        ]
       }
     },
     {
@@ -179,6 +296,15 @@
         "stress": 0,
         "voice_id": "RYUK",
         "sample_audio_path": "/audio_samples/RYUK.wav"
+      },
+      "access": {
+        "meetability": "open",
+        "gate": "Only the Death Note's owner can see or speak to him - no gate for the player.",
+        "where": "Wherever the player goes; invisible to everyone else",
+        "grants": [
+          "shinigami perspective on the rules",
+          "entertainment"
+        ]
       }
     }
   ],

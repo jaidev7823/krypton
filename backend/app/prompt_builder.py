@@ -196,34 +196,68 @@ def build_r0_prompt(
     player: PlayerSetup,
     world: WorldBible,
     character_states: dict[str, Any] | None = None,
+    feasibility_path: list[dict[str, Any]] | None = None,
 ) -> tuple[str, dict]:
-    system = (
-        "You are the Mission Architect for a simulation world.\n"
-        "Your only job is to turn the PLAYER'S OWN plan into a mission chain.\n"
-        "Rules:\n"
-        "- Break the player's own_plan into 4-5 missions that lead to their goal.\n"
-        "- TWO-TIER PLANNING: only the FIRST mission is concrete and playable. Later missions are ROUGH OUTLINES - "
-        "the world is alive and dialogue may change what happens next, so do NOT over-specify the future.\n"
-        "  * The FIRST mission (id 1) gets FULL detail: location, objective, reward, exact characters, and "
-        "  win_conditions + fail_conditions (see stat rules below). This is what the player plays immediately.\n"
-        "  * Every LATER mission (id 2+) is an OUTLINE: set detail_level 'outline', give it a title, a ONE-LINE "
-        "  description of its purpose, and the rough characters it will involve. Leave objective, reward, "
-        "  win_conditions and fail_conditions EMPTY/[] - they will be generated when the mission actually begins.\n"
-        "- 'characters' MUST only use ids from the world bible's autonomous_players. Never invent characters.\n"
-        "- Missions escalate: earlier missions are low-stakes (a single character), later ones raise the stakes.\n"
-        "- Read current_character_states: those are the LIVE stats/goals/current problems AFTER the cast was projected. "
-        "The first mission's objective must reference the current values (e.g. 'Raise Matsuda trust from 2 to 7').\n"
-        "- The FIRST mission MUST define win_conditions and fail_conditions, using the short stat names "
-        "(trust, familiarity, respect, suspicion, rapport, disclosure_level, stress) and bible character ids.\n"
-        "  * win_conditions: the stat values that mean the objective is achieved, e.g. "
-        "[{\"character\": \"MATSUDA\", \"stat\": \"trust\", \"min\": 5}]. Use 'min' for 'raise to at least X' "
-        "and 'max' for 'lower to at most X'. Base the target on the CURRENT value from current_character_states.\n"
-        "  * fail_conditions: the stat values that mean the character is frustrated enough to walk away or kick the "
-        "player out, e.g. [{\"character\": \"MATSUDA\", \"stat\": \"trust\", \"max\": 1}] or "
-        "[{\"character\": \"MATSUDA\", \"stat\": \"stress\", \"min\": 8}]. Set these so a badly-botched mission can actually fail.\n"
-        "- Do NOT write dialogue or narration. Missions are objectives, not story.\n"
-        "- Output ONLY JSON matching the schema exactly. No extra text, no markdown."
-    )
+    if feasibility_path:
+        system = (
+            "You are the Mission Architect for a simulation world.\n"
+            "Your only job is to turn the WORLD GATE'S feasible path into a mission chain.\n"
+            "The World Gate already judged what is possible. You MUST respect its ruling.\n"
+            "Rules:\n"
+            f"- Build ONE mission per feasible step, in the exact order given. {len(feasibility_path)} steps -> {len(feasibility_path)} missions.\n"
+            "- The FIRST mission MUST be the first feasible step - it is what the player plays immediately.\n"
+            "- TWO-TIER PLANNING: only the FIRST mission is concrete and playable. Later missions are ROUGH OUTLINES - "
+            "the world is alive and dialogue may change what happens next, so do NOT over-specify the future.\n"
+            "  * The FIRST mission (id 1) gets FULL detail: location, objective, reward, exact characters, and "
+            "  win_conditions + fail_conditions (see stat rules below).\n"
+            "  * Every LATER mission (id 2+) is an OUTLINE: set detail_level 'outline', give it a title, a ONE-LINE "
+            "  description of its purpose, and the rough characters it will involve. Leave objective, reward, "
+            "  win_conditions and fail_conditions EMPTY/[] - they will be generated when the mission actually begins.\n"
+            "- 'characters' MUST only use ids from the world bible's autonomous_players. Never invent characters.\n"
+            "- EVERY mission MUST carry a 'reason': the world's access gate that makes this step necessary. "
+            "Quote the constraint plainly, e.g. \"You cannot meet Chief Yagami directly - he vets everyone. "
+            "Matsuda sees him daily and is the only accessible introduction.\"\n"
+            "- Read current_character_states: those are the LIVE stats/goals/current problems AFTER the cast was projected. "
+            "The first mission's objective must reference the current values (e.g. 'Raise Matsuda trust from 2 to 7').\n"
+            "- The FIRST mission MUST define win_conditions and fail_conditions, using the short stat names "
+            "(trust, familiarity, respect, suspicion, rapport, disclosure_level, stress) and bible character ids.\n"
+            "  * win_conditions: the stat values that mean the objective is achieved, e.g. "
+            "[{\"character\": \"MATSUDA\", \"stat\": \"trust\", \"min\": 5}]. Use 'min' for 'raise to at least X' "
+            "and 'max' for 'lower to at most X'. Base the target on the CURRENT value from current_character_states.\n"
+            "  * fail_conditions: the stat values that mean the character is frustrated enough to walk away or kick the "
+            "player out, e.g. [{\"character\": \"MATSUDA\", \"stat\": \"trust\", \"max\": 1}] or "
+            "[{\"character\": \"MATSUDA\", \"stat\": \"stress\", \"min\": 8}]. Set these so a badly-botched mission can actually fail.\n"
+            "- Do NOT write dialogue or narration. Missions are objectives, not story.\n"
+            "- Output ONLY JSON matching the schema exactly. No extra text, no markdown."
+        )
+    else:
+        system = (
+            "You are the Mission Architect for a simulation world.\n"
+            "Your only job is to turn the PLAYER'S OWN plan into a mission chain.\n"
+            "Rules:\n"
+            "- Break the player's own_plan into 4-5 missions that lead to their goal.\n"
+            "- TWO-TIER PLANNING: only the FIRST mission is concrete and playable. Later missions are ROUGH OUTLINES - "
+            "the world is alive and dialogue may change what happens next, so do NOT over-specify the future.\n"
+            "  * The FIRST mission (id 1) gets FULL detail: location, objective, reward, exact characters, and "
+            "  win_conditions + fail_conditions (see stat rules below). This is what the player plays immediately.\n"
+            "  * Every LATER mission (id 2+) is an OUTLINE: set detail_level 'outline', give it a title, a ONE-LINE "
+            "  description of its purpose, and the rough characters it will involve. Leave objective, reward, "
+            "  win_conditions and fail_conditions EMPTY/[] - they will be generated when the mission actually begins.\n"
+            "- 'characters' MUST only use ids from the world bible's autonomous_players. Never invent characters.\n"
+            "- Missions escalate: earlier missions are low-stakes (a single character), later ones raise the stakes.\n"
+            "- Read current_character_states: those are the LIVE stats/goals/current problems AFTER the cast was projected. "
+            "The first mission's objective must reference the current values (e.g. 'Raise Matsuda trust from 2 to 7').\n"
+            "- The FIRST mission MUST define win_conditions and fail_conditions, using the short stat names "
+            "(trust, familiarity, respect, suspicion, rapport, disclosure_level, stress) and bible character ids.\n"
+            "  * win_conditions: the stat values that mean the objective is achieved, e.g. "
+            "[{\"character\": \"MATSUDA\", \"stat\": \"trust\", \"min\": 5}]. Use 'min' for 'raise to at least X' "
+            "and 'max' for 'lower to at most X'. Base the target on the CURRENT value from current_character_states.\n"
+            "  * fail_conditions: the stat values that mean the character is frustrated enough to walk away or kick the "
+            "player out, e.g. [{\"character\": \"MATSUDA\", \"stat\": \"trust\", \"max\": 1}] or "
+            "[{\"character\": \"MATSUDA\", \"stat\": \"stress\", \"min\": 8}]. Set these so a badly-botched mission can actually fail.\n"
+            "- Do NOT write dialogue or narration. Missions are objectives, not story.\n"
+            "- Output ONLY JSON matching the schema exactly. No extra text, no markdown."
+        )
     live = {}
     if character_states:
         for cid, s in character_states.items():
@@ -248,6 +282,7 @@ def build_r0_prompt(
                     "title": "str - short mission name",
                     "description": "str - mission 1: what must happen in-world; later missions: ONE-LINE purpose only",
                     "why_important": "str - how it serves the player's goal",
+                    "reason": "str - the world's access gate that makes this step necessary (e.g. 'You can't meet the Chief directly - he vets everyone; Matsuda sees him daily')",
                     "detail_level": "str - 'detailed' for mission 1; 'outline' for every later mission",
                     "location": "str - in-world place",
                     "characters": ["bible character ids present in this mission"],
@@ -271,6 +306,93 @@ def build_r0_prompt(
                     ],
                 }
             ]
+        },
+    }
+    if feasibility_path:
+        user["feasibility_path"] = feasibility_path
+        user["task"] = "Build exactly ONE mission per feasibility step, in order. Mission 1 = the first step."
+    return system, user
+
+
+# ---------------------------------------------------------------------------
+# R8: Feasibility Gate / World Gate
+# ---------------------------------------------------------------------------
+
+def build_feasibility_prompt(
+    player: PlayerSetup,
+    world: WorldBible,
+    character_states: dict[str, Any] | None = None,
+    events: list[str] | None = None,
+) -> tuple[str, dict]:
+    """Judge the player's plan against the world's access rules.
+
+    The world controls who the player can realistically meet (each character's
+    ``access`` block: meetability / gate / where / grants). This agent decides
+    what is possible NOW, returns the blockers with in-world reasons, and the
+    ordered path of steps that ARE possible. R0 must build missions from it.
+    """
+    live = {}
+    if character_states:
+        for cid, s in character_states.items():
+            live[cid] = {
+                "goal": s.get("goal", ""),
+                "current_problem": s.get("current_problem", ""),
+                "solution": s.get("solution", ""),
+                "stats": s.get("stats", {}),
+            }
+    access = {}
+    for c in world.autonomous_players:
+        access[c.id] = {
+            "meetability": c.access.meetability,
+            "gate": c.access.gate,
+            "where": c.access.where,
+            "grants": c.access.grants,
+        }
+    system = (
+        "You are the World Gate for a simulation world. You know exactly what is and "
+        "isn't possible right now, because the world itself controls access.\n"
+        "Rules:\n"
+        "- Judge the player's plan against each character's access metadata (meetability, gate, where, grants). "
+        "You are the arbiter of what the player can actually DO in this world.\n"
+        "- feasible=false when any part of the plan is blocked by the world: a guarded/secluded character with no "
+        "unlocked gate, a character the player has no route to, an act the world forbids.\n"
+        "- blockers: name the impossible step, WHY it is blocked (quote the world's constraint in-world, e.g. "
+        "'Chief Yagami is extremely selective about who he meets - you have no introduction and don't know when he is free'), "
+        "and HOW to unlock it (e.g. 'get an introduction from a Task Force member who trusts you, like Matsuda').\n"
+        "- path: the ordered steps that ARE possible now, each reaching one target_character with a concrete "
+        "objective and the reason that step must happen first (the access gate). The first step is the only "
+        "thing the player can attempt immediately.\n"
+        "- reframe: a one-sentence rewrite of the player's plan into its feasible version, in the player's voice.\n"
+        "- Never invent characters outside the world bible. Never write dialogue or narration.\n"
+        "- Output ONLY JSON matching the schema exactly. No extra text, no markdown."
+    )
+    user = {
+        "task": "Judge whether the player's plan is possible in this world right now, and give the feasible path.",
+        "player": player.model_dump(mode="json"),
+        "player_own_plan": player.own_plan,
+        "world_lore": world.model_dump(mode="json"),
+        "character_access": access,
+        "current_character_states": live,
+        "recent_events": events or [],
+        "output_schema": {
+            "feasible": "bool - is the player's plan possible, at least partly, right now?",
+            "verdict": "str - one-line in-world verdict on the plan (e.g. 'You can't just walk up to Chief Yagami - he vets everyone.')",
+            "blockers": [
+                {
+                    "step": "str - the part of the plan that is blocked",
+                    "why_blocked": "str - the world's constraint, stated in-world",
+                    "how_to_unlock": "str - what would make it possible"
+                }
+            ],
+            "path": [
+                {
+                    "step": "str - concrete step name",
+                    "target_character": "str - bible character id this step reaches",
+                    "objective": "str - what must be achieved in this step",
+                    "reason": "str - the access gate that makes this step the next thing to do"
+                }
+            ],
+            "reframe": "str - the player's plan rewritten into its feasible version"
         },
     }
     return system, user

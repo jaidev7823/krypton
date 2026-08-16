@@ -13,9 +13,16 @@ export function MissionLobbyScreen() {
   const requestRevision = useGameStore((s) => s.requestRevision);
   const shiftNotice = useGameStore((s) => s.shiftNotice);
   const events = useGameStore((s) => s.events);
+  const feasibility = useGameStore((s) => s.feasibility);
 
   const recap = entries.filter((e) => e.kind === "narration").pop();
   const meanwhile = events.filter((e) => e.startsWith("Meanwhile,")).slice(-2);
+
+  const blocked =
+    feasibility && feasibility.blockers.length > 0
+      ? feasibility.blockers
+      : [];
+  const pathSteps = feasibility && feasibility.path.length > 0 ? feasibility.path : [];
 
   return (
     <div className="min-h-screen bg-bg p-4 sm:p-8">
@@ -50,6 +57,47 @@ export function MissionLobbyScreen() {
           </motion.div>
         )}
 
+        {feasibility && feasibility.verdict && (
+          <motion.div
+            initial={{ opacity: 0, y: 10 }}
+            animate={{ opacity: 1, y: 0 }}
+            className="rounded-xl border border-edge bg-surface/40 p-4"
+          >
+            <p className="text-xs font-semibold uppercase tracking-wide text-muted">
+              The world checked your plan
+            </p>
+            <p className="mt-1.5 text-sm text-ink">{feasibility.verdict}</p>
+
+            {blocked.length > 0 && (
+              <ul className="mt-3 space-y-2">
+                {blocked.map((b, i) => (
+                  <li key={`b-${i}`} className="text-sm">
+                    <span className="font-medium text-suspicion">{b.step}</span>
+                    <span className="block text-muted">{b.why_blocked}</span>
+                    {b.how_to_unlock && (
+                      <span className="block text-accent">How to unlock: {b.how_to_unlock}</span>
+                    )}
+                  </li>
+                ))}
+              </ul>
+            )}
+
+            {pathSteps.length > 0 && (
+              <div className="mt-3 space-y-1.5">
+                <p className="text-[11px] font-semibold uppercase tracking-wide text-accent">
+                  The possible path
+                </p>
+                {pathSteps.map((s, i) => (
+                  <p key={`p-${i}`} className="text-sm text-ink">
+                    {i + 1}. <span className="font-medium">{s.step}</span>
+                    {s.reason && <span className="text-muted"> — {s.reason}</span>}
+                  </p>
+                ))}
+              </div>
+            )}
+          </motion.div>
+        )}
+
         {recap && recap.text && (
           <motion.div
             initial={{ opacity: 0, y: 10 }}
@@ -78,6 +126,12 @@ export function MissionLobbyScreen() {
           </h1>
           {mission?.description && (
             <p className="mt-2 text-sm text-muted">{mission.description}</p>
+          )}
+
+          {mission?.reason && (
+            <p className="mt-2 rounded-lg border border-edge bg-surface-2/60 px-3 py-2 text-xs text-muted">
+              Why this first: {mission.reason}
+            </p>
           )}
 
           <dl className="mt-5 space-y-3 text-sm">

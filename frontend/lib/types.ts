@@ -46,6 +46,7 @@ export interface GameTurnMission {
   title: string;
   description: string;
   why_important: string;
+  reason?: string;
   status: string;
   chain_progress: string;
   location: string;
@@ -96,6 +97,7 @@ export interface Mission {
   title: string;
   description: string;
   why_important: string;
+  reason?: string;
   status: string;
   location: string;
   characters: string[];
@@ -139,6 +141,27 @@ export interface MissionDebrief {
   who_is_around: string[];
 }
 
+export interface FeasibilityBlocker {
+  step: string;
+  why_blocked: string;
+  how_to_unlock: string;
+}
+
+export interface FeasibleStep {
+  step: string;
+  target_character: string;
+  objective: string;
+  reason: string;
+}
+
+export interface FeasibilityReport {
+  feasible: boolean;
+  verdict: string;
+  blockers: FeasibilityBlocker[];
+  path: FeasibleStep[];
+  reframe: string;
+}
+
 export interface TurnResponse {
   session_id: string;
   turn: GameTurn;
@@ -148,6 +171,7 @@ export interface TurnResponse {
   debrief?: MissionDebrief | null;
   events?: string[];
   reconcile_shift?: string | null;
+  feasibility?: FeasibilityReport | null;
 }
 
 export interface AudioResponse {

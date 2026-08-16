@@ -55,6 +55,15 @@ class CharacterStats(PermissiveModel):
     sample_audio_path: str = ""
 
 
+class CharacterAccess(PermissiveModel):
+    """How reachable this character is - the world's control over who the
+    player can realistically meet. The Feasibility Gate must respect these."""
+    meetability: str = ""  # "open" | "guarded" | "secluded"
+    gate: str = ""         # what unlocks a meeting (e.g. "introduction from a Task Force member")
+    where: str = ""        # where/when the character can actually be found
+    grants: list[str] = Field(default_factory=list)  # introductions, information, access
+
+
 class AutonomousPlayer(PermissiveModel):
     id: str
     type: str = "autonomous_player"
@@ -71,6 +80,7 @@ class AutonomousPlayer(PermissiveModel):
     stat_ladders: dict[str, Any] = Field(default_factory=dict)
     memory_about_player: list[str] = Field(default_factory=list)
     stats: CharacterStats = Field(default_factory=CharacterStats)
+    access: CharacterAccess = Field(default_factory=CharacterAccess)
 
 
 class WorldInfo(PermissiveModel):
@@ -308,6 +318,7 @@ class Mission(PermissiveModel):
     title: str = ""
     description: str = ""
     why_important: str = ""
+    reason: str = ""  # the world access gate that makes this the accessible step
     status: str = "lobby"
     detail_level: str = "detailed"  # detailed (playable) | outline (name+purpose+cast, fleshed on entry)
     location: str = ""
@@ -321,6 +332,35 @@ class Mission(PermissiveModel):
 class MissionArchitectOutput(PermissiveModel):
     """R0 output - the fixed mission chain derived from the player's own plan."""
     mission_chain: list[Mission] = Field(default_factory=list)
+
+
+class FeasibilityBlocker(PermissiveModel):
+    """Why a piece of the player's plan cannot happen right now."""
+    step: str = ""
+    why_blocked: str = ""
+    how_to_unlock: str = ""
+
+
+class FeasibleStep(PermissiveModel):
+    """One concrete step that IS possible now, in world-valid order."""
+    step: str = ""
+    target_character: str = ""
+    objective: str = ""
+    reason: str = ""
+
+
+class FeasibilityReport(PermissiveModel):
+    """World Gate output - judges the player's plan against the world's access.
+
+    The Feasibility Gate (R8) runs before the Mission Architect (R0). R0 must
+    build missions ONLY from `path`, and each mission must carry the `reason`
+    that makes it the accessible step.
+    """
+    feasible: bool = True
+    verdict: str = ""  # one-line verdict on the plan, in-world
+    blockers: list[FeasibilityBlocker] = Field(default_factory=list)
+    path: list[FeasibleStep] = Field(default_factory=list)
+    reframe: str = ""  # a rewritten, feasible version of the player's plan
 
 
 class CharacterProjection(PermissiveModel):
@@ -382,6 +422,7 @@ class GameTurnMission(PermissiveModel):
     title: str = ""
     description: str = ""
     why_important: str = ""
+    reason: str = ""
     status: str = "ongoing"
     chain_progress: str = ""
     location: str = ""
@@ -434,3 +475,4 @@ class TurnResponse(PermissiveModel):
     debrief: Optional[MissionDebrief] = None
     events: list[str] = Field(default_factory=list)
     reconcile_shift: Optional[str] = None
+    feasibility: Optional[FeasibilityReport] = None

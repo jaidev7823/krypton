@@ -31,17 +31,72 @@ SQLModel.metadata.create_all(db_module.engine)
 from app import llm_caller, main  # noqa: E402
 from app.types import (  # noqa: E402
     CastProjectionOutput, CharacterBrainOutput, CharacterProjection, CharacterReasoning,
-    CoachReply, CoachRequest, Commitment, Mission, MissionArchitectOutput, MissionDebrief,
+    CoachReply, CoachRequest, Commitment, FeasibilityBlocker, FeasibilityReport,
+    FeasibleStep, Mission, MissionArchitectOutput, MissionDebrief,
     MissionEndOutput, NarratorOutput, NextMissionAdjustment, NpcAction, NpcEffect,
     ReconcileOutput, SkillFeedback, StatChange, StatChanges, TurnRequest, WorldEffect,
     WorldTickOutput,
 )
 
 CALLS: list[str] = []
+last_ma_user: dict = {}
 BRAIN_MODE = {"fail": False, "commit": False, "stall": False}
 END_MODE = {"severity": "mild"}
 NARRATOR_LEAVE_ALL = {"on": False}
 NARRATOR_CLOSE = {"on": False}
+GATE_MODE = {"block_direct_yagami": False}
+
+
+def _fake_gate_report(block: bool) -> FeasibilityReport:
+    if block:
+        return FeasibilityReport(
+            feasible=False,
+            verdict="You can't just walk up to Chief Yagami - he vets everyone. "
+                    "But Matsuda sees him daily and can get you in.",
+            blockers=[
+                FeasibilityBlocker(
+                    step="Meet Chief Soichiro Yagami directly",
+                    why_blocked="Chief Yagami is extremely selective about who he meets - "
+                                "you have no introduction and don't know when he is free.",
+                    how_to_unlock="Get an introduction from a Task Force member who trusts you, "
+                                  "like Matsuda.",
+                )
+            ],
+            path=[
+                FeasibleStep(
+                    step="Earn Matsuda's trust",
+                    target_character="MATSUDA",
+                    objective="Raise Matsuda trust so he vouches for you",
+                    reason="Matsuda sees Chief Yagami daily and is the only accessible introduction.",
+                ),
+                FeasibleStep(
+                    step="Meet Chief Yagami with Matsuda's backing",
+                    target_character="SOICHIRO",
+                    objective="Get a place in the task force",
+                    reason="Chief Yagami only meets people vouched for by a Task Force member.",
+                ),
+            ],
+            reframe="Get close to Matsuda so he introduces you to Chief Yagami.",
+        )
+    return FeasibilityReport(
+        feasible=True,
+        verdict="Your plan is possible - this is the path the world will let you walk.",
+        path=[
+            FeasibleStep(
+                step="Win Matsuda over",
+                target_character="MATSUDA",
+                objective="Raise Matsuda trust",
+                reason="Matsuda is an open, easy first contact and can introduce you further.",
+            ),
+            FeasibleStep(
+                step="Earn L's attention",
+                target_character="L",
+                objective="Lower L's suspicion",
+                reason="L is secluded - he only notices people the task force puts in front of him.",
+            ),
+        ],
+        reframe="Get close to Matsuda, then earn L's attention.",
+    )
 
 
 def _fake_model(agent):
@@ -61,11 +116,14 @@ def _fake_model(agent):
     if agent == "mission_architect":
         return MissionArchitectOutput(mission_chain=[
             Mission(id=1, title="Matsuda Bridge", description="Get a referral",
+                    reason="Matsuda sees Chief Yagami daily - he is the only accessible "
+                           "introduction to the Chief.",
                     objective="Raise Matsuda trust to 6", reward="Matsuda's number",
                     location="Cafeteria", characters=["MATSUDA"],
                     win_conditions=[{"character": "MATSUDA", "stat": "trust", "min": 6}],
                     fail_conditions=[{"character": "MATSUDA", "stat": "trust", "max": 1}]),
             Mission(id=2, title="Earn L's attention", detail_level="outline",
+                    reason="L is secluded - he only notices people the task force puts forward.",
                     description="Lower L's suspicion and earn his interest.",
                     location="Class 3B", characters=["L"]),
         ])
@@ -100,6 +158,8 @@ def _fake_model(agent):
         return CoachReply(reply="Matsuda trust is still 4/6. Stop pushing questions - "
                                  "label his fear first (LABELING), then use a CALIBRATED_QUESTION "
                                  "to get him to open up about the case.")
+    if agent == "feasibility_gate":
+        return _fake_gate_report(GATE_MODE["block_direct_yagami"])
     if agent == "listener":
         return SkillFeedback(did_use_concept=False)
     if agent.startswith("brain:"):
@@ -206,6 +266,8 @@ def _mission_end_model(user):
 
 def fake_call_json(system, user, response_model, retries=3, agent="default", on_attempt=None):
     CALLS.append(agent)
+    if agent == "mission_architect":
+        last_ma_user["payload"] = user
     model = _mission_end_model(user) if agent == "mission_end" else _fake_model(agent)
     if on_attempt:
         on_attempt(system=system, user_payload=user, raw_response="{}",
@@ -259,15 +321,22 @@ def run_checks():
     check(all(bool(seeded[cid]["relationship_dynamics"]) for cid in ("L", "LIGHT", "MATSUDA", "SOICHIRO", "RYUK")),
           "each character carries relationship_dynamics for the R2 brain")
 
-    # STATE 1 -> 2: submit a plan -> caster THEN R0 runs ONCE, mission lobby
+    # STATE 1 -> 2: submit a plan -> caster THEN World Gate THEN R0, lobby
     r = main._run_turn(TurnRequest(session_id=sid, action="submit_plan",
                                    plan_text="Get close to Matsuda, then earn L's attention"))
     check(r.game_state == "mission_lobby", "submit_plan -> mission_lobby")
-    check(CALLS == ["caster", "mission_architect"],
-          f"caster ran BEFORE mission_architect, once (calls={CALLS})")
+    check(CALLS == ["caster", "feasibility_gate", "mission_architect"],
+          f"caster ran first, then World Gate, then mission_architect, once (calls={CALLS})")
     check(len(r.mission_chain) == 2, "mission chain of 2 built")
     check(r.turn.mission.title == "Matsuda Bridge" and r.turn.mission.status == "lobby",
           "current mission is M1 in lobby")
+    check(r.feasibility is not None and r.feasibility.verdict,
+          "World Gate report surfaced on the lobby response")
+    check(r.feasibility.feasible and len(r.feasibility.path) == 2,
+          "feasibility path carries the world-valid steps")
+    check(bool(r.mission_chain[0].reason), "mission 1 carries the world access reason")
+    check(r.turn.mission.reason and "Matsuda" in r.turn.mission.reason,
+          "M1 reason surfaces on the current mission (why this first)")
 
     # Cast projection persisted: stats/goal/plan updated for projected chars
     row = db_module.get_session(sid)
@@ -285,10 +354,11 @@ def run_checks():
     check(row.character_states["L"]["stats"]["disclosure_level"] == 1,
           "L disclosure projected to 1 (guarded even when engaged)")
 
-    # Every LLM call is audited to agent_calls - including caster + mission_architect
+    # Every LLM call is audited to agent_calls - including caster + feasibility_gate + mission_architect
     calls = db_module.get_agent_calls(sid)
     agents = [c.agent for c in calls]
     check("caster" in agents, f"caster logged to agent_calls (got {agents})")
+    check("feasibility_gate" in agents, f"feasibility_gate logged to agent_calls (got {agents})")
     check("mission_architect" in agents, f"mission_architect logged to agent_calls (got {agents})")
     check(all(c.turn_number == 0 for c in calls), "plan-time agents logged under turn 0")
     ma_call = next(c for c in calls if c.agent == "mission_architect")
@@ -298,7 +368,7 @@ def run_checks():
     # STATE 3 -> 4: enter mission -> no LLM, live
     r = main._run_turn(TurnRequest(session_id=sid, action="enter_mission", new_player_input=""))
     check(r.game_state == "live_mission", "enter_mission -> live_mission")
-    check(CALLS == ["caster", "mission_architect"], "enter_mission still no LLM")
+    check(CALLS == ["caster", "feasibility_gate", "mission_architect"], "enter_mission still no LLM")
 
     # STATE 4: live turn -> R1+R2(cast only)+R3, presence synced.
     # The narrator FAKE always claims current_mission_won=True - but the real
@@ -395,6 +465,8 @@ def run_checks():
     check(row.mission_state["current"]["detail_level"] == "detailed"
           and row.mission_state["current"]["win_conditions"],
           "M2 now fully detailed with stat conditions after fleshing")
+    check(bool(row.mission_state["current"].get("reason")),
+          "M2 access-gate reason survives the fleshing")
     r = main._run_turn(TurnRequest(session_id=sid, new_player_input="engage L"))
     check(r.game_state == "live_mission", "M2 turn 1 stays live (suspicion 4 > 3)")
     r = main._run_turn(TurnRequest(session_id=sid, new_player_input="disarm L"))
@@ -451,6 +523,38 @@ def run_checks():
                                    new_player_input="hi"))
     check(r.game_state == "plan_elicitation", "no-plan turn stays in elicitation")
 
+    # ---- WORLD GATE: an infeasible plan routes through the world's path ----
+    # Player asks for something the world forbids (meet Chief Yagami directly).
+    # The Gate blocks it with a reason and R0 builds missions ONLY from the
+    # feasible path -> the Matsuda-first chain is now justified, not random.
+    GATE_MODE["block_direct_yagami"] = True
+    r = main._run_turn(TurnRequest(player_setup=json.loads(json.dumps(setup_json())),
+                                   new_player_input="", action="start"))
+    gate_sid = r.session_id
+    r = main._run_turn(TurnRequest(session_id=gate_sid, action="submit_plan",
+                                   plan_text="Meet Chief Yagami directly and ask for a place in the task force"))
+    GATE_MODE["block_direct_yagami"] = False
+    check(r.game_state == "mission_lobby", "blocked plan still routes to a lobby (never dead-ends)")
+    check(r.feasibility is not None and r.feasibility.feasible is False,
+          "World Gate rules the plan infeasible as written")
+    check(any("Yagami" in b.step and "selective" in b.why_blocked for b in r.feasibility.blockers),
+          "blocker explains WHY the Chief can't be met (he vets everyone)")
+    check(bool(r.feasibility.reframe), "Gate reframes the plan into its feasible version")
+    path = r.feasibility.path
+    check(path and path[0].target_character == "MATSUDA",
+          f"feasible path starts with the accessible step (got {[s.target_character for s in path]})")
+    check(bool(last_ma_user.get("payload", {}).get("feasibility_path")),
+          "R0 received the feasibility_path to build missions from")
+    check(r.mission_chain[0].characters == ["MATSUDA"],
+          "mission 1 is the accessible step (Matsuda) - not a straight line to the Chief")
+    check("introduction" in (r.mission_chain[0].reason or "").lower()
+          or "access" in (r.mission_chain[0].reason or "").lower(),
+          "mission 1 reason quotes the access gate (introduction)")
+    row = db_module.get_session(gate_sid)
+    fe = row.mission_state.get("feasibility") or {}
+    check(fe.get("feasible") is False and len(fe.get("blockers") or []) == 1,
+          "blocked feasibility report persisted into mission_state")
+
     # ---- FAIL PATH (HARSH): the character reports the player -> plan flops ----
     r = main._run_turn(TurnRequest(player_setup=json.loads(json.dumps(setup_json())),
                                    new_player_input="", action="start"))
@@ -493,7 +597,7 @@ def run_checks():
     r = main._run_turn(TurnRequest(session_id=harsh_sid, action="submit_plan",
                                    plan_text="Repair Matsuda's trust before touching L"))
     check(r.game_state == "mission_lobby", "revised plan -> mission lobby")
-    check(CALLS == ["mission_architect"],
+    check(CALLS == ["feasibility_gate", "mission_architect"],
           f"revision skips cast re-projection - stats/memory survive (calls={CALLS})")
     check(len(r.mission_chain) == 2, "revised plan built a fresh mission chain")
     row = db_module.get_session(harsh_sid)
