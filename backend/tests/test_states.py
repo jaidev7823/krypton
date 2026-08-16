@@ -34,17 +34,23 @@ from app.types import (  # noqa: E402
     CoachReply, CoachRequest, Commitment, FeasibilityBlocker, FeasibilityReport,
     FeasibleStep, Mission, MissionArchitectOutput, MissionDebrief,
     MissionEndOutput, NarratorOutput, NextMissionAdjustment, NpcAction, NpcEffect,
-    ReconcileOutput, SkillFeedback, StatChange, StatChanges, TurnRequest, WorldEffect,
-    WorldTickOutput,
+    ObserverMemory, ReconcileOutput, SceneDirectionOutput, SkillFeedback, StatChange,
+    StatChanges, TurnRequest, WorldEffect, WorldTickOutput,
 )
 
 CALLS: list[str] = []
 last_ma_user: dict = {}
+last_r2_user: dict = {}
 BRAIN_MODE = {"fail": False, "commit": False, "stall": False}
 END_MODE = {"severity": "mild"}
 NARRATOR_LEAVE_ALL = {"on": False}
 NARRATOR_CLOSE = {"on": False}
 GATE_MODE = {"block_direct_yagami": False}
+DIRECT_MODE = {
+    "addressed_to": "MATSUDA",
+    "speaker_order": ["MATSUDA", "SOICHIRO"],
+    "stay_silent": [],
+}
 
 
 def _fake_gate_report(block: bool) -> FeasibilityReport:
@@ -99,7 +105,7 @@ def _fake_gate_report(block: bool) -> FeasibilityReport:
     )
 
 
-def _fake_model(agent):
+def _fake_model(agent, user=None):
     if agent == "caster":
         return CastProjectionOutput(characters=[
             CharacterProjection(character_id="MATSUDA", trust=4, familiarity=2,
@@ -160,6 +166,12 @@ def _fake_model(agent):
                                  "to get him to open up about the case.")
     if agent == "feasibility_gate":
         return _fake_gate_report(GATE_MODE["block_direct_yagami"])
+    if agent == "scene_director":
+        return SceneDirectionOutput(
+            addressed_to=DIRECT_MODE["addressed_to"],
+            speaker_order=DIRECT_MODE["speaker_order"],
+            stay_silent=DIRECT_MODE["stay_silent"],
+        )
     if agent == "listener":
         return SkillFeedback(did_use_concept=False)
     if agent.startswith("brain:"):
@@ -215,11 +227,17 @@ def _fake_model(agent):
         if NARRATOR_CLOSE["on"]:
             scene_update = {"conversation_over": True, "ending": "character_walked_away",
                             "characters_left": ["MATSUDA"]}
+        observer_memories = [
+            ObserverMemory(character=cid,
+                           note="I stayed quiet and watched the others talk to the player.")
+            for cid in (user.get("silent") or [])
+        ]
         return NarratorOutput(narration="The cafeteria hums.",
                               where="Cafeteria",
                               why_here="Mission in progress",
                               mission_status={"current_mission_won": True},
-                              scene_update=scene_update)
+                              scene_update=scene_update,
+                              observer_memories=observer_memories)
     raise AssertionError(f"unexpected agent {agent}")
 
 
@@ -268,7 +286,9 @@ def fake_call_json(system, user, response_model, retries=3, agent="default", on_
     CALLS.append(agent)
     if agent == "mission_architect":
         last_ma_user["payload"] = user
-    model = _mission_end_model(user) if agent == "mission_end" else _fake_model(agent)
+    if agent.startswith("brain:"):
+        last_r2_user["payload"] = user
+    model = _mission_end_model(user) if agent == "mission_end" else _fake_model(agent, user)
     if on_attempt:
         on_attempt(system=system, user_payload=user, raw_response="{}",
                    parsed=model.model_dump(mode="json"), success=True, error="", attempt=1)
@@ -696,6 +716,66 @@ def run_checks():
     row = db_module.get_session(cap_sid)
     check(any("drifted apart" in e for e in row.mission_state.get("events", [])),
           "turn-cap close logged a 'drifted apart' world event")
+
+    # ---- SCENE DIRECTOR: a two-character room reacts in order, addressed first ----
+    # The director says the player addressed MATSUDA but orders SOICHIRO first;
+    # the addressed character is mechanically forced to speak first, and the
+    # second speaker must SEE what the first already said.
+    r = main._run_turn(TurnRequest(player_setup=json.loads(json.dumps(setup_json())),
+                                   new_player_input="", action="start"))
+    scene_sid = r.session_id
+    main._run_turn(TurnRequest(session_id=scene_sid, action="submit_plan",
+                               plan_text="Get close to Matsuda and Soichiro"))
+    row = db_module.get_session(scene_sid)
+    row.mission_state["current"]["characters"] = ["MATSUDA", "SOICHIRO"]
+    db_module.save_session_state(scene_sid, row.mission_state, row.character_states, row.conversation)
+    main._run_turn(TurnRequest(session_id=scene_sid, action="enter_mission", new_player_input=""))
+    DIRECT_MODE["addressed_to"] = "MATSUDA"
+    DIRECT_MODE["speaker_order"] = ["SOICHIRO", "MATSUDA"]  # director says Soichiro first
+    DIRECT_MODE["stay_silent"] = []
+    CALLS.clear()
+    r = main._run_turn(TurnRequest(session_id=scene_sid, new_player_input="Matsuda, what do you think?"))
+    check("scene_director" in CALLS, "Scene Director ran for a 2-character room")
+    brains = [c for c in CALLS if c.startswith("brain:")]
+    check(brains == ["brain:MATSUDA", "brain:SOICHIRO"],
+          f"addressed character MATSUDA speaks FIRST despite the director's order (got {brains})")
+    check(r.turn.messages[-1].speaker == "SOICHIRO",
+          "the last message is the final speaker (SOICHIRO)")
+    check(last_r2_user.get("payload", {}).get("directed_to_you") is False,
+          "SOICHIRO (not addressed) knows the player spoke to MATSUDA, not him")
+    before = last_r2_user.get("payload", {}).get("this_turn_before_you") or []
+    check(any("MATSUDA" in (m.get("speaker") or "") and "speaks" in (m.get("text") or "")
+              for m in before),
+          "the second speaker SEES what the first said this turn (reacts, not in isolation)")
+    row = db_module.get_session(scene_sid)
+    spoke = [m["speaker"] for m in row.conversation[-2:]]
+    check(spoke == ["MATSUDA", "SOICHIRO"], f"conversation persists real turn order (got {spoke})")
+
+    # ---- SCENE DIRECTOR: silencing ----
+    # The director silences SOICHIRO: no brain call (no tokens), no stat change,
+    # but R3 writes his observer memory so he still remembers the scene.
+    DIRECT_MODE["speaker_order"] = ["MATSUDA"]
+    DIRECT_MODE["stay_silent"] = ["SOICHIRO"]
+    BRAIN_MODE["stall"] = True  # keep the mission live so the scene stays put
+    CALLS.clear()
+    soichiro_before = dict(db_module.get_session(scene_sid)
+                           .character_states["SOICHIRO"]["stats"])
+    r = main._run_turn(TurnRequest(session_id=scene_sid, new_player_input="Only you, Matsuda"))
+    BRAIN_MODE["stall"] = False
+    brains = [c for c in CALLS if c.startswith("brain:")]
+    check(brains == ["brain:MATSUDA"],
+          f"silenced SOICHIRO gets NO brain call (tokens saved) (got {brains})")
+    row = db_module.get_session(scene_sid)
+    check(row.character_states["SOICHIRO"]["stats"] == soichiro_before,
+          "silenced character's stats stay frozen until they next speak")
+    mem = row.character_states["SOICHIRO"]["memory"]
+    check(any("stayed quiet" in m for m in mem),
+          "narrator wrote an observer memory for the silent character")
+    check(r.turn.messages[-1].speaker == "MATSUDA",
+          "only the speaker's line renders in the chat")
+    DIRECT_MODE["speaker_order"] = ["MATSUDA", "SOICHIRO"]
+    DIRECT_MODE["stay_silent"] = []
+    DIRECT_MODE["addressed_to"] = "MATSUDA"
 
     print("\nALL STATE CHECKS PASSED")
 

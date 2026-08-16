@@ -10,9 +10,8 @@ from __future__ import annotations
 
 import json
 import logging
-from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
-from typing import Any
+from typing import Any, Optional
 
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
@@ -35,6 +34,7 @@ from .prompt_builder import (
     build_r3_prompt,
     build_r4_prompt,
     build_reconcile_prompt,
+    build_scene_direction_prompt,
     build_world_tick_prompt,
 )
 from .types import (
@@ -53,6 +53,7 @@ from .types import (
     NarratorOutput,
     PlayerSetup,
     ReconcileOutput,
+    SceneDirectionOutput,
     SkillBible,
     SkillFeedback,
     TurnRequest,
@@ -904,10 +905,56 @@ def _run_live_turn(
     # a per-turn copy that ends with the player's newest words.
     turn_conversation = list(conversation) + [{"speaker": "PLAYER", "text": body.new_player_input}]
 
-    # R2 - Character Brain, one per character in the mission cast (parallel).
+    # R2 - Character Brains, SEQUENTIAL and ordered. The Scene Director decides
+    # who the player aimed at, who reacts and in what order, and who stays
+    # silent. Each speaker sees the dialogue spoken BEFORE them this turn, so
+    # replies chain into a real conversation instead of everyone reacting to
+    # the player in isolation. Silent characters get no brain call - their
+    # stats stay put and R3 writes their observer memory instead.
     # The brain judges ONLY the player's words - the R1 skill analysis is
     # intentionally NOT passed to it.
-    def _char_call(cid: str):
+    speakers: list[str] = present_ids
+    silent: list[str] = []
+    addressed_to: Optional[str] = None
+
+    if len(present_ids) > 1:
+        try:
+            summaries = {
+                cid: {
+                    "goal": s.get("goal", ""),
+                    "current_problem": s.get("current_problem", ""),
+                    "solution": s.get("solution", ""),
+                    "relationship_state": s.get("relationship_dynamics", ""),
+                    "stats": s.get("stats", {}),
+                }
+                for cid, s in character_states.items()
+                if cid in present_ids
+            }
+            dir_system, dir_user = build_scene_direction_prompt(
+                body.new_player_input, mctx, present_ids, summaries
+            )
+            direction = llm_caller.call_json(
+                dir_system, dir_user, SceneDirectionOutput,
+                agent="scene_director", on_attempt=on_attempt("scene_director"),
+            )
+            addressed_to = direction.addressed_to if direction.addressed_to in present_ids else None
+            ordered = [c for c in direction.speaker_order if c in present_ids]
+            silent = [c for c in direction.stay_silent if c in present_ids and c not in ordered]
+            speakers = ordered or present_ids
+        except Exception:
+            logger.warning("Scene Director failed; falling back to cast order")
+            speakers, silent, addressed_to = present_ids, [], None
+
+        # Mechanical guarantees: the addressed character ALWAYS speaks first,
+        # and at least one speaker always exists (never an empty floor).
+        if addressed_to:
+            speakers = [addressed_to] + [c for c in speakers if c != addressed_to]
+        speakers = speakers or present_ids
+        silent = [c for c in present_ids if c not in speakers]
+
+    r2_outputs: list[CharacterBrainOutput] = []
+    in_turn_before: list[dict[str, str]] = []
+    for cid in speakers:
         char = character_states[cid]
         r2_system, r2_user = build_r2_prompt(
             character=char,
@@ -915,16 +962,16 @@ def _run_live_turn(
             conversation=turn_conversation,
             new_player_input=body.new_player_input,
             world_name=world.world.name,
+            addressed_to=addressed_to,
+            this_turn_before_you=in_turn_before,
         )
-        return llm_caller.call_json(
+        out = llm_caller.call_json(
             r2_system, r2_user, CharacterBrainOutput,
             agent=f"brain:{cid}", on_attempt=on_attempt(f"brain:{cid}"),
         )
-
-    r2_outputs: list[CharacterBrainOutput] = []
-    if present_ids:
-        with ThreadPoolExecutor(max_workers=min(len(present_ids), 4)) as ex:
-            r2_outputs = list(ex.map(_char_call, present_ids))
+        r2_outputs.append(out)
+        if out.dialogue.strip():
+            in_turn_before.append({"speaker": out.character_id, "text": out.dialogue})
 
     # Apply state changes FIRST so the mission verdict reads the post-turn stats.
     for out in r2_outputs:
@@ -951,10 +998,23 @@ def _run_live_turn(
         r1.model_dump(mode="json"),
         [o.model_dump(mode="json") for o in r2_outputs],
         turn_conversation,
+        speakers=speakers,
+        silent=silent,
     )
     r3 = llm_caller.call_json(
         r3_system, r3_user, NarratorOutput, agent="narrator", on_attempt=on_attempt("narrator")
     )
+
+    # Silent characters observed the scene without speaking - R3 wrote each a
+    # one-line memory note. Append them (capped) so their state catches up next
+    # time they actually speak, without spending a brain call this turn.
+    if silent:
+        for om in r3.observer_memories:
+            if om.character in character_states and om.note.strip():
+                mem = character_states[om.character].setdefault("memory", [])
+                if isinstance(mem, list) and om.note.strip() not in mem:
+                    mem.append(om.note.strip())
+                    character_states[om.character]["memory"] = mem[-5:]
 
     # SOCIAL CLOSURE: the mission ends only when the conversation itself is
     # over - the player was kicked out, every character left/walked away, or

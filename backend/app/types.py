@@ -220,6 +220,17 @@ class CharacterBrainOutput(PermissiveModel):
     problem_solving_framework: str = ""
 
 
+class SceneDirectionOutput(PermissiveModel):
+    """Scene Director output - who the player aimed at, who reacts and in what
+    order, and who is present but stays silent this turn.
+
+    Mechanical rules in main.py force `addressed_to` first and guarantee at
+    least one speaker, so a bad model answer can never freeze the scene."""
+    addressed_to: Optional[str] = None
+    speaker_order: list[str] = Field(default_factory=list)
+    stay_silent: list[str] = Field(default_factory=list)
+
+
 class NextMission(PermissiveModel):
     title: str = ""
     why_important: str = ""
@@ -240,12 +251,19 @@ class SceneUpdate(PermissiveModel):
     ending: str = ""
 
 
+class ObserverMemory(PermissiveModel):
+    """One line a present-but-silent character takes in while others speak."""
+    character: str = ""
+    note: str = ""
+
+
 class NarratorOutput(PermissiveModel):
     narration: str = ""
     where: str = ""
     why_here: str = ""
     mission_status: MissionStatus = Field(default_factory=MissionStatus)
     scene_update: SceneUpdate = Field(default_factory=SceneUpdate)
+    observer_memories: list[ObserverMemory] = Field(default_factory=list)
 
 
 class WorldEffect(PermissiveModel):

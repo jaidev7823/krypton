@@ -12,7 +12,7 @@ R3 Narrator/Manager   - environment narration + mission chain progression
 from __future__ import annotations
 
 import json
-from typing import Any
+from typing import Any, Optional
 
 from .types import PlayerSetup, SkillBible, WorldBible
 
@@ -731,12 +731,60 @@ def build_r1_prompt(
 # R2: Character Brain (per character in scene)
 # ---------------------------------------------------------------------------
 
+def build_scene_direction_prompt(
+    new_player_input: str,
+    mission_context: dict[str, Any],
+    present_ids: list[str],
+    character_summaries: dict[str, Any],
+) -> tuple[str, dict]:
+    """Scene Director - decide who reacts to the player's message, in what
+    order, and who stays silent. Runs only when 2+ characters are present.
+
+    Speakers run one after another (each aware of the dialogue before them),
+    so the order the director picks IS the conversation.
+    """
+    system = (
+        "You are the Scene Director of a live scene. You decide who speaks, when, and who "
+        "stays quiet. You never write dialogue yourself - you only set the floor.\n"
+        "Rules:\n"
+        "- addressed_to: who the player's message is clearly aimed at (e.g. 'Matsuda, what do you "
+        "think?' -> MATSUDA). If they spoke to the room or it is ambiguous, set null.\n"
+        "- speaker_order: the characters who react, in the order they should speak. "
+        "The addressed character speaks FIRST. Then whoever has the strongest stake in the "
+        "player's words, whoever reacts to the addressed character, and whoever the mission "
+        "objective most needs to hear from. Prefer a short exchange: 1-3 speakers unless the "
+        "moment genuinely demands more. Do NOT make every present character speak - the player "
+        "should not be flooded with replies.\n"
+        "- stay_silent: everyone else present - they observe this turn and do not speak. "
+        "They remember what happens but their feelings/stats do not change yet.\n"
+        "- The mission's target character (see objective/win_conditions in mission_context) must "
+        "be given the floor when the player is working toward them, so the player can always progress.\n"
+        "- speaker_order + stay_silent must exactly cover all present ids. Never invent characters "
+        "outside the present list.\n"
+        "- Output ONLY JSON matching the schema exactly. No extra text, no markdown."
+    )
+    user = {
+        "task": "Direct the scene for this player message.",
+        "new_player_input": new_player_input,
+        "present_characters": present_ids,
+        "character_summaries": character_summaries,
+        "mission_context": mission_context,
+        "output_schema": {
+            "addressed_to": "str or null - the present character the player clearly aimed at, or null",
+            "speaker_order": ["present character ids who speak, in order - addressed first"],
+            "stay_silent": ["present character ids who stay quiet this turn (the rest of the room)"]
+        },
+    }
+    return system, user
+
 def build_r2_prompt(
     character: dict[str, Any],
     mission_context: dict[str, Any],
     conversation: list[dict[str, str]],
     world_name: str,
     new_player_input: str,
+    addressed_to: Optional[str] = None,
+    this_turn_before_you: list[dict[str, str]] | None = None,
 ) -> tuple[str, dict]:
     stats = character.get("stats") or {}
     dynamics = character.get("relationship_dynamics", "")
@@ -809,6 +857,27 @@ def build_r2_prompt(
             "problem_solving_framework": "str - how you approach problems, or 'None'"
         },
     }
+    if addressed_to:
+        user["addressed_to"] = addressed_to
+        user["directed_to_you"] = character.get("id") == addressed_to
+        user["floor_note"] = (
+            "The player directed their words at YOU - answer as the one spoken to."
+            if character.get("id") == addressed_to
+            else f"The player directed their words at {addressed_to}, not you. You are joining the "
+                 "conversation - react to what they said and to the others who already spoke, without "
+                 "stealing the floor from the addressed character."
+        )
+    else:
+        user["directed_to_you"] = False
+        user["floor_note"] = (
+            "The player spoke to the room, not to you specifically. You are part of the scene - "
+            "react naturally, mindful that others are also in the conversation."
+        )
+    if this_turn_before_you:
+        user["this_turn_before_you"] = [
+            {"speaker": m.get("speaker", ""), "text": m.get("text", "")}
+            for m in this_turn_before_you
+        ]
     return system, user
 
 
@@ -823,6 +892,8 @@ def build_r3_prompt(
     r1_output: dict[str, Any],
     r2_outputs: list[dict[str, Any]],
     conversation: list[dict[str, str]],
+    speakers: list[str] | None = None,
+    silent: list[str] | None = None,
 ) -> tuple[str, dict]:
     system = (
         "You are the Narrator for a living world simulation.\n"
@@ -845,6 +916,12 @@ def build_r3_prompt(
         "- You do NOT create missions or invent new story arcs. The mission chain is already fixed.\n"
         "- Report chain_progress exactly as given in mission_context.\n"
         "- The current scene and its characters are defined by the active mission. Do not add characters who are not in the mission.\n"
+        "- The Scene Director already set who spoke this turn (speakers) and who stayed quiet (silent). "
+        "Narrate the scene naturally around that: whoever stayed silent does NOT speak; you may note in the "
+        "narration that they watched quietly.\n"
+        "- observer_memories: for EVERY character in the 'silent' list, write ONE compact first-person note "
+        "recording what they observed this turn (who spoke, what was said, how they read it). This note is "
+        "appended to their memory so they remember without having spoken. Use their character id and voice.\n"
         "- Output ONLY JSON matching the schema exactly."
     )
     user = {
@@ -855,6 +932,8 @@ def build_r3_prompt(
         "request_1_output": r1_output,
         "request_2_outputs": r2_outputs,
         "full_conversation_this_mission": conversation,
+        "speakers": speakers or [],
+        "silent": silent or [],
         "output_schema": {
             "narration": "str - environment description",
             "where": "str - location",
@@ -869,7 +948,13 @@ def build_r3_prompt(
                 "new_characters_present_for_next_turn": ["ids"],
                 "conversation_over": "bool - true ONLY when the conversation itself is over (kicked out, everyone left, character walked away, or a long-stalled scene wraps up). NEVER true just because progress is slow.",
                 "ending": "str - why it ended, e.g. 'everyone_left' | 'kicked_out' | 'character_walked_away' | 'went_nowhere'. Empty when conversation_over is false."
-            }
+            },
+            "observer_memories": [
+                {
+                    "character": "bible id of a silent character",
+                    "note": "str - one first-person line of what they observed this turn"
+                }
+            ]
         },
     }
     return system, user
