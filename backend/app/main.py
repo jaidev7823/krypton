@@ -164,11 +164,13 @@ def _dump_or_plain(value) -> Any:
 
 
 def mission_context(mission_state: dict, scene: dict) -> dict:
+    current = mission_state.get("current") or {}
     return {
-        "current_mission": mission_state.get("current"),
+        "current_mission": current,
         "old_missions_summary": mission_state.get("history", []),
         "events": mission_state.get("events") or [],
         "scene": scene,
+        "turns_in_mission": int(current.get("turns_elapsed") or 0),
     }
 
 
@@ -225,15 +227,16 @@ def _condition_met(cond: dict, character_states: dict) -> bool:
 
 
 def mission_outcome(mission: dict, character_states: dict, r3_won: bool) -> str:
-    """Deterministic verdict from the mission's stat thresholds.
+    """Deterministic verdict from the mission's WIN thresholds.
 
-    Returns 'won', 'failed', or 'ongoing'. R3's word is used only as a
-    fallback for legacy missions that have no structured conditions.
+    Returns 'won' or 'ongoing'. A mission is NEVER ended by a stat-based
+    fail condition: low trust/suspicion just means you are not winning yet.
+    Ending is decided separately by SOCIAL closure - the conversation itself
+    being over (everyone left, the player was kicked out, a character walked
+    away). R3's word is used only as a fallback for legacy missions that have
+    no structured conditions.
     """
     wins = mission.get("win_conditions") or []
-    fails = mission.get("fail_conditions") or []
-    if fails and any(_condition_met(c, character_states) for c in fails):
-        return "failed"
     if wins:
         return "won" if all(_condition_met(c, character_states) for c in wins) else "ongoing"
     return "won" if r3_won else "ongoing"
@@ -247,6 +250,32 @@ def _outcome_culprits(mission: dict, character_states: dict) -> list[str]:
         if cid and _condition_met(cond, character_states) and cid not in culprits:
             culprits.append(cid)
     return culprits
+
+
+# A live mission is allowed this many turns before the scene is forced to a
+# close (softlock guard). The narrator is told to wrap up stalled scenes well
+# before this; this is the mechanical backstop.
+MAX_MISSION_TURNS = 8
+
+
+def _social_closure(
+    current: dict,
+    r3_scene: dict,
+    present_ids: list[str],
+) -> str:
+    """Decide if the conversation itself is over - independent of stats.
+
+    Returns '' (keep playing) or 'failed' with a reason. The mission ends ONLY
+    on social closure, never on a stat being low.
+    """
+    if r3_scene.get("conversation_over"):
+        return "failed"
+    left = set(r3_scene.get("characters_left") or [])
+    if present_ids and all(cid in left for cid in present_ids):
+        return "failed"
+    if int(current.get("turns_elapsed") or 0) >= MAX_MISSION_TURNS:
+        return "failed"
+    return ""
 
 
 def apply_world_effects(character_states: dict, effects) -> None:
@@ -311,6 +340,7 @@ def apply_mission_state(mission_state: dict, r3: NarratorOutput) -> bool:
     nxt = chain[idx + 1] if idx >= 0 and idx + 1 < len(chain) else None
     if nxt:
         nxt["status"] = "lobby"
+        nxt["turns_elapsed"] = 0
         mission_state["current"] = nxt
     else:
         mission_state["current"] = None
@@ -581,6 +611,7 @@ def _run_turn(body: TurnRequest) -> TurnResponse:
             _flesh_mission(player, world, mission_state, character_states, on_attempt=on_attempt)
             current = mission_state["current"]
             current["status"] = "active"
+            current["turns_elapsed"] = 0
             save_session_state(row.id, mission_state, character_states, conversation)
             return _live_response(row.id, mission_state, player)
         if action == "revise_plan":
@@ -861,10 +892,14 @@ def _run_live_turn(
     # model can never drag in characters that are not part of the mission.
     _sync_presence(character_states, present_ids)
 
-    # Deterministic mission verdict from the stat thresholds set by R0.
+    # Turn counter for THIS mission (feeds R3 + the social-closure backstop).
+    current["turns_elapsed"] = int(current.get("turns_elapsed") or 0) + 1
+
+    # Deterministic mission verdict: WIN only. The mission is NOT over just
+    # because a stat is low - it only closes when the conversation closes.
     outcome = mission_outcome(current, character_states, False)
 
-    # R3 - Narrator (verdict already decided; it only narrates it)
+    # R3 - Narrator (the win verdict is already decided; it only narrates it)
     r3_mctx = {**mctx, "computed_mission_outcome": outcome}
     r3_system, r3_user = build_r3_prompt(
         world,
@@ -878,13 +913,23 @@ def _run_live_turn(
         r3_system, r3_user, NarratorOutput, agent="narrator", on_attempt=on_attempt("narrator")
     )
 
-    # If EVERYONE in the mission cast left, the room is empty and no further
-    # conversation can happen - the mission is over, regardless of stats.
-    # R3 only reports who left; the emptiness itself is a mechanical verdict.
-    if outcome != "won" and present_ids:
-        left = set(r3.scene_update.characters_left or [])
-        if all(cid in left for cid in present_ids):
+    # SOCIAL CLOSURE: the mission ends only when the conversation itself is
+    # over - the player was kicked out, every character left/walked away, or
+    # the scene has run its course (turn cap backstop). Never because a stat
+    # is low. R3 only REPORTS the closure; the verdict is mechanical here.
+    if outcome != "won":
+        closed = _social_closure(current, r3.scene_update.model_dump(mode="json"), present_ids)
+        if closed:
             outcome = "failed"
+            if int(current.get("turns_elapsed") or 0) >= MAX_MISSION_TURNS and not (
+                r3.scene_update.conversation_over
+                or (present_ids and all(
+                    cid in (r3.scene_update.characters_left or []) for cid in present_ids
+                ))
+            ):
+                mission_state.setdefault("events", []).append(
+                    "The conversation ran its course with no breakthrough - everyone drifted apart."
+                )
 
     # R4 - Mission End Director: what the end MEANS for the world.
     # Runs only when the mission is definitively won or failed.

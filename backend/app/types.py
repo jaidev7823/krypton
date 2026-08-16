@@ -226,6 +226,8 @@ class SceneUpdate(PermissiveModel):
     characters_entered: list[str] = Field(default_factory=list)
     characters_left: list[str] = Field(default_factory=list)
     new_characters_present_for_next_turn: list[str] = Field(default_factory=list)
+    conversation_over: bool = False
+    ending: str = ""
 
 
 class NarratorOutput(PermissiveModel):

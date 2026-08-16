@@ -38,9 +38,10 @@ from app.types import (  # noqa: E402
 )
 
 CALLS: list[str] = []
-BRAIN_MODE = {"fail": False, "commit": False}
+BRAIN_MODE = {"fail": False, "commit": False, "stall": False}
 END_MODE = {"severity": "mild"}
 NARRATOR_LEAVE_ALL = {"on": False}
+NARRATOR_CLOSE = {"on": False}
 
 
 def _fake_model(agent):
@@ -140,17 +141,20 @@ def _fake_model(agent):
                                         about="ask Chief Soichiro about the player", status="open")
                              if BRAIN_MODE["commit"] and cid == "MATSUDA" else None),
             stat_changes=StatChanges(
-                trust=StatChange(delta=1, reason="Player was friendly"),
-                familiarity=StatChange(delta=1, reason="Player shared background"),
-                respect=StatChange(delta=1, reason="Player showed competence"),
-                suspicion=StatChange(delta=-1, reason="Player seemed genuine"),
-                rapport=StatChange(delta=1, reason="Easy rapport"),
-                disclosure_level=StatChange(delta=1, reason="Player opened up"),
-                stress=StatChange(delta=-1, reason="Reassured"),
+                trust=StatChange(delta=0 if BRAIN_MODE["stall"] else 1, reason="Player was friendly"),
+                familiarity=StatChange(delta=0 if BRAIN_MODE["stall"] else 1, reason="Player shared background"),
+                respect=StatChange(delta=0 if BRAIN_MODE["stall"] else 1, reason="Player showed competence"),
+                suspicion=StatChange(delta=0 if BRAIN_MODE["stall"] else -1, reason="Player seemed genuine"),
+                rapport=StatChange(delta=0 if BRAIN_MODE["stall"] else 1, reason="Easy rapport"),
+                disclosure_level=StatChange(delta=0 if BRAIN_MODE["stall"] else 1, reason="Player opened up"),
+                stress=StatChange(delta=0 if BRAIN_MODE["stall"] else -1, reason="Reassured"),
             ),
         )
     if agent == "narrator":
         scene_update = {"characters_left": ["MATSUDA"]} if NARRATOR_LEAVE_ALL["on"] else {}
+        if NARRATOR_CLOSE["on"]:
+            scene_update = {"conversation_over": True, "ending": "character_walked_away",
+                            "characters_left": ["MATSUDA"]}
         return NarratorOutput(narration="The cafeteria hums.",
                               where="Cafeteria",
                               why_here="Mission in progress",
@@ -457,8 +461,10 @@ def run_checks():
     CALLS.clear()
     BRAIN_MODE["fail"] = True
     END_MODE["severity"] = "harsh"
+    NARRATOR_CLOSE["on"] = True
     r = main._run_turn(TurnRequest(session_id=harsh_sid, new_player_input="Rude outburst"))
     BRAIN_MODE["fail"] = False
+    NARRATOR_CLOSE["on"] = False
     check(r.game_state == "plan_revision", "failed mission -> plan_revision (not a retry lobby)")
     check(r.debrief is not None and "what will you do now" in r.debrief.message,
           "failure debrief asks the player for a new plan")
@@ -509,8 +515,10 @@ def run_checks():
     main._run_turn(TurnRequest(session_id=mild_sid, action="enter_mission", new_player_input=""))
     END_MODE["severity"] = "mild"
     BRAIN_MODE["fail"] = True
+    NARRATOR_CLOSE["on"] = True
     r = main._run_turn(TurnRequest(session_id=mild_sid, new_player_input="Rude outburst"))
     BRAIN_MODE["fail"] = False
+    NARRATOR_CLOSE["on"] = False
     row = db_module.get_session(mild_sid)
     check(r.game_state == "plan_revision", "mild failure also -> plan_revision")
     check(row.character_states["L"]["stats"]["suspicion_towards_player"] == 5,
@@ -539,6 +547,51 @@ def run_checks():
     present = [cid for cid, s in row.character_states.items() if s.get("present")]
     check(present == ["LIGHT", "RYUK"],
           "presence synced after empty room (Matsuda gone, others around)")
+
+    # ---- STATS NEVER END A MISSION: a low stat just means not winning yet ----
+    # Inject a fail_condition that is ALREADY met (trust 4 <= 10). The mission
+    # must stay live: the mission only closes on social closure, never a stat.
+    r = main._run_turn(TurnRequest(player_setup=json.loads(json.dumps(setup_json())),
+                                   new_player_input="", action="start"))
+    stat_sid = r.session_id
+    main._run_turn(TurnRequest(session_id=stat_sid, action="submit_plan",
+                               plan_text="Get close to Matsuda"))
+    main._run_turn(TurnRequest(session_id=stat_sid, action="enter_mission", new_player_input=""))
+    row = db_module.get_session(stat_sid)
+    row.mission_state["current"]["fail_conditions"] = [
+        {"character": "MATSUDA", "stat": "trust", "max": 10}]
+    db_module.save_session_state(stat_sid, row.mission_state, row.character_states, row.conversation)
+    CALLS.clear()
+    main._run_turn(TurnRequest(session_id=stat_sid, new_player_input="hi"))
+    check("mission_end" not in CALLS and "narrator" in CALLS,
+          f"tripped stat fail_condition does NOT end the mission (calls={CALLS})")
+    row = db_module.get_session(stat_sid)
+    check(row.mission_state.get("current") is not None
+          and row.mission_state["current"]["status"] == "active",
+          "mission stays active with a low stat - no premature failure")
+
+    # ---- TURN-CAP BACKSTOP: a stalled scene wraps up after MAX_MISSION_TURNS ----
+    # The brain never moves any stat and the narrator never reports closure;
+    # the mechanical cap ends the scene so the game cannot softlock.
+    r = main._run_turn(TurnRequest(player_setup=json.loads(json.dumps(setup_json())),
+                                   new_player_input="", action="start"))
+    cap_sid = r.session_id
+    main._run_turn(TurnRequest(session_id=cap_sid, action="submit_plan",
+                               plan_text="Get close to Matsuda"))
+    main._run_turn(TurnRequest(session_id=cap_sid, action="enter_mission", new_player_input=""))
+    BRAIN_MODE["stall"] = True
+    last_state = "live_mission"
+    for i in range(8):
+        r = main._run_turn(TurnRequest(session_id=cap_sid, new_player_input="small talk"))
+        if r.game_state != "live_mission":
+            last_state = r.game_state
+            break
+    BRAIN_MODE["stall"] = False
+    check(last_state == "plan_revision",
+          f"stalled scene ends via the turn cap, no softlock (ended as {last_state})")
+    row = db_module.get_session(cap_sid)
+    check(any("drifted apart" in e for e in row.mission_state.get("events", [])),
+          "turn-cap close logged a 'drifted apart' world event")
 
     print("\nALL STATE CHECKS PASSED")
 

@@ -707,10 +707,18 @@ def build_r3_prompt(
         "Rules:\n"
         "- You are NOT a character. You describe the environment like a narrator.\n"
         "- Explain where the player is, why they are here, and context they don't have.\n"
-        "- The mission's win/loss is already decided mechanically by the Mission Manager from the stat "
+        "- The mission's WIN is decided mechanically by the Mission Manager from the stat "
         "thresholds - see computed_mission_outcome in your payload. NEVER change that verdict.\n"
-        "- If computed_mission_outcome is 'won', narrate the objective being achieved. If 'failed', narrate "
-        "the character getting frustrated and leaving or kicking the player out. If 'ongoing', narrate the scene only.\n"
+        "- A mission is NEVER over just because a stat is low or progress is slow. "
+        "It only ends when the conversation itself is over. Set scene_update.conversation_over=true "
+        "ONLY when the scene genuinely cannot continue, such as:\n"
+        "  * everyone in the room left or walked away,\n"
+        "  * a character kicked the player out / refused to keep talking / said goodbye and left,\n"
+        "  * the scene has dragged on with no win and no real progress (turns_in_mission is high) "
+        "and the characters naturally disengage and wrap up.\n"
+        "- When conversation_over=true, narrate the scene closing (character leaving, walking away, "
+        "or politely ending the conversation) and set scene_update.characters_left for whoever departs.\n"
+        "- If computed_mission_outcome is 'won', narrate the objective being achieved. If 'ongoing', narrate the scene only.\n"
         "- Set current_mission_won true ONLY if computed_mission_outcome is 'won'.\n"
         "- You do NOT create missions or invent new story arcs. The mission chain is already fixed.\n"
         "- Report chain_progress exactly as given in mission_context.\n"
@@ -718,7 +726,7 @@ def build_r3_prompt(
         "- Output ONLY JSON matching the schema exactly."
     )
     user = {
-        "task": "Narrate this turn and judge whether the current mission is won or lost.",
+        "task": "Narrate this turn; report only social closure (never stats) as ending the scene.",
         "world_lore": world.model_dump(mode="json"),
         "player": player.model_dump(mode="json"),
         "mission_context": mission_context,
@@ -735,8 +743,10 @@ def build_r3_prompt(
             },
             "scene_update": {
                 "characters_entered": ["ids"],
-                "characters_left": ["ids"],
-                "new_characters_present_for_next_turn": ["ids"]
+                "characters_left": ["ids who departed this turn"],
+                "new_characters_present_for_next_turn": ["ids"],
+                "conversation_over": "bool - true ONLY when the conversation itself is over (kicked out, everyone left, character walked away, or a long-stalled scene wraps up). NEVER true just because progress is slow.",
+                "ending": "str - why it ended, e.g. 'everyone_left' | 'kicked_out' | 'character_walked_away' | 'went_nowhere'. Empty when conversation_over is false."
             }
         },
     }
