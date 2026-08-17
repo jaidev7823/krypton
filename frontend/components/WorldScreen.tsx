@@ -5,7 +5,6 @@ import { motion } from "framer-motion";
 import { useGameStore } from "@/store/useGameStore";
 
 export function WorldScreen() {
-  const entries = useGameStore((s) => s.entries);
   const isLoading = useGameStore((s) => s.isLoading);
   const error = useGameStore((s) => s.error);
   const feasibility = useGameStore((s) => s.feasibility);
@@ -88,16 +87,6 @@ export function WorldScreen() {
           </motion.div>
         )}
 
-        {entries.filter((e) => e.kind === "narration").length > 0 && (
-          <motion.div
-            initial={{ opacity: 0, y: 10 }}
-            animate={{ opacity: 1, y: 0 }}
-            className="rounded-xl border border-edge bg-surface/60 p-4 text-sm italic text-muted"
-          >
-            {entries.filter((e) => e.kind === "narration").slice(-1)[0].text}
-          </motion.div>
-        )}
-
         {strategicPlan && (
           <motion.div
             initial={{ opacity: 0, y: 10 }}
@@ -120,7 +109,7 @@ export function WorldScreen() {
             What do you do next?
           </h1>
           <p className="mt-1 text-sm text-muted">
-            Describe your next action. The world will check if it&apos;s feasible and then bring the scene to life.
+            Describe your next action. The world will check feasibility and bring the scene to life.
           </p>
 
           <div className="mt-4 flex gap-2">

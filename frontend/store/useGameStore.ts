@@ -96,8 +96,8 @@ function applyTurn(set: (fn: (s: GameStateStore) => Partial<GameStateStore>) => 
     if (res.game_state === "setup") {
       entries = [];
     } else if (res.game_state === "world") {
-      // World state: append narration (action prompt), keep chat history
-      entries = [...base, narrationEntry];
+      // World state: keep live scene chat history, no narration (WorldScreen handles it)
+      entries = base;
     } else if (res.game_state === "live_scene" && res.turn.messages.length > 0) {
       entries = [...base, ...newEntries];
     }
