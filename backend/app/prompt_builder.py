@@ -334,20 +334,29 @@ def build_feasibility_check_prompt(
     character_states: dict[str, Any],
     action_text: str,
     events: list[str],
+    conversation: list[dict[str, str]] | None = None,
+    commitments: list[dict[str, Any]] | None = None,
 ) -> tuple[str, dict]:
     system = (
-        "You are the Impossibility Checker for a living world simulation.\n"
-        "Your only job: can the player realistically do this action RIGHT NOW?\n"
-        "Check three things:\n"
-        "1. Physical Proximity: Can the player reach the location?\n"
-        "2. Social Clearance: Will the target talk to the player without an escort/badge?\n"
-        "3. Information State: Does the player actually know where the target is?\n"
+        "You are the Feasibility Guide for a living world simulation.\n"
+        "Your job: tell the player if their action is realistic RIGHT NOW.\n"
+        "DEFAULT TO YES. Only block an action when there is a clear, concrete barrier "
+        "(locked door, hostile character, no access, physically impossible).\n"
         "Rules:\n"
-        "- If ANY check fails, set feasible=false and explain why.\n"
-        "- When blocked, suggest 1-3 nearby valid actions the player CAN do.\n"
-        "- Suggestions should be grounded in the world bible's access metadata.\n"
-        "- If all checks pass, set feasible=true with a brief reason.\n"
-        "- Be realistic. A student cannot walk into a police HQ uninvited.\n"
+        "1. If an NPC just INVITED the player somewhere, PROMISED to meet them, or OFFERED "
+        "an introduction in the recent conversation, that action is AUTOMATICALLY FEASIBLE — "
+        "even if the world bible normally gates access. The NPC's words override the default.\n"
+        "2. If an open commitment exists (NPC promised to do something), the player acting on "
+        "that promise is AUTOMATICALLY FEASIBLE.\n"
+        "3. The player's starting_position tells you where they are now. Moving to a nearby, "
+        "public, unlocked location is feasible. Walking into a restricted area without "
+        "permission is not.\n"
+        "4. Be lenient about social clearance — if the player has been talking to someone and "
+        "building rapport, that character is more likely to let them in or make introductions.\n"
+        "5. When blocked, suggest 1-3 actions the player CAN do right now, grounded in the "
+        "conversation context (not just raw access metadata).\n"
+        "6. Never reject an action just because the world bible says 'meetability=indirect' — "
+        "check if the conversation has already created a path.\n"
         "- Output ONLY JSON matching the schema exactly."
     )
     access_metadata = []
@@ -360,6 +369,7 @@ def build_feasibility_check_prompt(
             "where": char.access.where,
             "grants": char.access.grants,
         })
+    recent_conv = (conversation or [])[-12:]
     user = {
         "task": "Check if this action is feasible right now.",
         "player_action": action_text,
@@ -371,6 +381,8 @@ def build_feasibility_check_prompt(
         "world_name": world.world.name,
         "world_rules": world.world.rules,
         "character_access": access_metadata,
+        "recent_conversation": recent_conv,
+        "open_commitments": [c for c in (commitments or []) if c.get("status") == "open"],
         "recent_events": events[-5:] if events else [],
         "output_schema": {
             "feasible": "bool - true if the action is physically and socially possible",

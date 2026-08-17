@@ -281,12 +281,15 @@ def _run_feasibility_check(
     character_states: dict,
     action_text: str,
     mission_state: dict,
+    conversation: list | None = None,
     on_attempt=None,
 ) -> ActionFeasibility:
     """Fast referee: can the player realistically do this right now?"""
     from .prompt_builder import build_feasibility_check_prompt
     system, user = build_feasibility_check_prompt(
         player, world, character_states, action_text, mission_state.get("events") or [],
+        conversation=conversation or [],
+        commitments=mission_state.get("commitments") or [],
     )
     try:
         return llm_caller.call_json(
@@ -553,7 +556,7 @@ def _run_turn(body: TurnRequest) -> TurnResponse:
 
         feasibility = _run_feasibility_check(
             player, world, character_states, action_text, mission_state,
-            on_attempt=on_attempt,
+            conversation=conversation, on_attempt=on_attempt,
         )
         if not feasibility.feasible:
             _world_tick(player, world, mission_state, character_states,
