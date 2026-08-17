@@ -906,6 +906,15 @@ def build_scene_direction_prompt(
     so the order the director picks IS the conversation.
     """
     scene_brief = mission_context.get("scene_brief", "")
+    mission = mission_context.get("mission", {})
+    mission_block = ""
+    if mission:
+        mission_block = (
+            f"\nMISSION: {mission.get('title', '')}\n"
+            f"Objective: {mission.get('objective', '')}\n"
+            f"Characters in mission: {', '.join(mission.get('characters', []))}\n"
+            f"Win conditions: {mission.get('win_conditions', [])}\n"
+        )
     brief_block = (
         f"\nSCENE BRIEF (what the player declared they want to do in this scene):\n{scene_brief}\n"
         if scene_brief else ""
@@ -918,13 +927,13 @@ def build_scene_direction_prompt(
         "think?' -> MATSUDA). If they spoke to the room or it is ambiguous, set null.\n"
         "- speaker_order: the characters who react, in the order they should speak. "
         "The addressed character speaks FIRST. Then whoever has the strongest stake in the "
-        "player's words, whoever reacts to the addressed character, and whoever the scene brief's "
+        "player's words, whoever reacts to the addressed character, and whoever the mission's "
         "goal most needs to hear from. Prefer a short exchange: 1-3 speakers unless the "
         "moment genuinely demands more. Do NOT make every present character speak - the player "
         "should not be flooded with replies.\n"
         "- stay_silent: everyone else present - they observe this turn and do not speak. "
         "They remember what happens but their feelings/stats do not change yet.\n"
-        "- The character most relevant to the scene brief must be given the floor so the player "
+        "- The character most relevant to the mission must be given the floor so the player "
         "can make progress toward their declared goal.\n"
         "- speaker_order + stay_silent must exactly cover all present ids. Never invent characters "
         "outside the present list.\n"
@@ -937,6 +946,8 @@ def build_scene_direction_prompt(
         "character_summaries": character_summaries,
         "mission_context": mission_context,
     }
+    if mission:
+        user["mission"] = mission
     if scene_brief:
         user["scene_brief"] = scene_brief
     user["output_schema"] = {

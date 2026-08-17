@@ -74,16 +74,24 @@ def _fake_model(agent, user=None):
             )
         return ActionFeasibility(feasible=True, reason="This is within your reach.")
     if agent == "mission_architect":
+        action_lower = (user.get("player_action") or "").lower()
+        chars = []
+        if "matsuda" in action_lower:
+            chars.append("MATSUDA")
+        if "soichiro" in action_lower:
+            chars.append("SOICHIRO")
+        if not chars:
+            chars = ["MATSUDA"]
         return Mission(
             id=1,
-            title="Gain Matsuda's Trust",
-            description="Talk to Matsuda and get him to vouch for you with Chief Yagami.",
-            characters=["MATSUDA"],
+            title="Gain Trust",
+            description="Talk to the characters and build rapport.",
+            characters=chars,
             location="NPA Cafeteria",
-            objective="Raise Matsuda's trust from 0 to 5 so he agrees to introduce you to Chief Yagami.",
-            reward="Matsuda introduces you to Chief Yagami, unlocking access to the Chief's office.",
-            win_conditions=[{"character": "MATSUDA", "stat": "trust", "min": 5}],
-            fail_conditions=[{"character": "MATSUDA", "stat": "suspicion", "max": 8}],
+            objective="Build trust with the target characters.",
+            reward="They agree to help you.",
+            win_conditions=[{"character": chars[0], "stat": "trust", "min": 5}],
+            fail_conditions=[{"character": chars[0], "stat": "suspicion", "max": 8}],
         )
     if agent == "mission_eval":
         return MissionDebrief(

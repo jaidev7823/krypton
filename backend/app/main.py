@@ -162,13 +162,17 @@ def _dump_or_plain(value) -> Any:
 
 
 def scene_context(mission_state: dict, scene: dict) -> dict:
-    return {
+    ctx = {
         "strategic_plan": mission_state.get("strategic_plan", ""),
         "scene_brief": mission_state.get("scene_brief", ""),
         "events": mission_state.get("events") or [],
         "scene": scene,
         "turns_in_scene": int(mission_state.get("turns_elapsed") or 0),
     }
+    mission = mission_state.get("current_mission")
+    if mission:
+        ctx["mission"] = mission
+    return ctx
 
 
 STAT_KEY_MAP = {
@@ -582,14 +586,18 @@ def _run_turn(body: TurnRequest) -> TurnResponse:
                 row.id, mission_state, player, world, feasibility=feasibility,
             )
 
-        present_ids = _determine_present_ids(action_text, world, character_states)
-        if not present_ids:
-            present_ids = [c.id for c in world.autonomous_players[:1]]
-
         mission = _run_mission_architect(
             player, world, character_states, action_text, mission_state,
             on_attempt=on_attempt,
         )
+
+        if mission and mission.characters:
+            present_ids = [cid for cid in mission.characters if cid in character_states]
+        else:
+            present_ids = _determine_present_ids(action_text, world, character_states)
+        if not present_ids:
+            present_ids = [c.id for c in world.autonomous_players[:1]]
+
         mission_state["present_ids"] = present_ids
         mission_state["turns_elapsed"] = 0
         mission_state["scene_brief"] = action_text
