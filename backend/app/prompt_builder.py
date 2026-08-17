@@ -233,11 +233,23 @@ def build_action_mission_prompt(
         "promise access the world bible doesn't grant.\n"
         "- Do NOT write dialogue or narration. This is a mission brief, not a story.\n"
         "- Output ONLY JSON matching the schema exactly. No extra text, no markdown."
+
+        "CRITICAL PRIORITY:"
+        "The player's declared player_action is authoritative.\n"
+        "Generate the mission for THAT ACTION, not for the player's long-term goal, "
+        "own_plan, previous plans, or what you think would be strategically better.\n"
+        "Never redirect, optimize, reinterpret, or replace the player's declared action "
+        "with an earlier step from own_plan.\n"
+        "If player_action says \"seek out LIGHT\", the mission must involve LIGHT.\n"
+        "If player_action says \"talk to MATSUDA\", the mission must involve MATSUDA.\n"
+        "If player_action says \"go to the academy\", the mission location must be the academy.\n"
+
+        "The player's goal and own_plan provide context only. They must NEVER override\n"
+        "player_action."
     )
     user = {
         "task": "Generate one playable mission from the player's declared action.",
-        "player": player.model_dump(mode="json"),
-        "player_action": action_text,
+        "Player_action": action_text,
         "world_lore": world.model_dump(mode="json"),
         "available_characters": [c.id for c in world.autonomous_players],
         "current_character_states": live,

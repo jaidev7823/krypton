@@ -74,7 +74,7 @@ def _fake_model(agent, user=None):
             )
         return ActionFeasibility(feasible=True, reason="This is within your reach.")
     if agent == "mission_architect":
-        action_lower = (user.get("player_action") or "").lower()
+        action_lower = (user.get("Player_action") or user.get("player_action") or "").lower()
         chars = []
         if "matsuda" in action_lower:
             chars.append("MATSUDA")

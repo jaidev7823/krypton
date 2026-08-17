@@ -6,6 +6,8 @@ import { AudioButton } from "./AudioButton";
 export function TopBar() {
   const player = useGameStore((s) => s.player);
   const strategicPlan = useGameStore((s) => s.strategicPlan);
+  const mission = useGameStore((s) => s.mission);
+  const gameState = useGameStore((s) => s.gameState);
   const toggleCoach = useGameStore((s) => s.toggleCoach);
 
   return (
@@ -16,6 +18,12 @@ export function TopBar() {
           <span className="hidden text-xs text-muted md:inline">
             {player.character_name} · {player.world_choice}
           </span>
+        )}
+        {gameState === "live_scene" && mission && (
+          <div className="hidden min-w-0 items-center gap-2 rounded-full border border-accent/40 bg-accent/10 px-3 py-1 text-xs lg:flex">
+            <span className="font-semibold text-accent">{mission.title}</span>
+            <span className="max-w-[250px] truncate text-muted">{mission.objective}</span>
+          </div>
         )}
         {strategicPlan && (
           <div className="hidden min-w-0 items-center gap-2 rounded-full border border-edge bg-surface-2 px-3 py-1 text-xs text-muted lg:flex">
