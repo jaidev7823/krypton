@@ -274,6 +274,13 @@ class MissionDebrief(PermissiveModel):
     who_is_around: list[str] = Field(default_factory=list)
 
 
+class SceneExitDecision(PermissiveModel):
+    """Should this scene end now?"""
+    should_exit: bool = False
+    reason: str = ""
+    characters_left: list[str] = Field(default_factory=list)
+
+
 class NextMission(PermissiveModel):
     title: str = ""
     why_important: str = ""

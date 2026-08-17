@@ -38,6 +38,7 @@ from app.types import (  # noqa: E402
     NarratorOutput,
     ObserverMemory,
     SceneDirectionOutput,
+    SceneExitDecision,
     SceneExitHook,
     SkillFeedback,
     StatChange,
@@ -53,6 +54,7 @@ BRAIN_MODE = {"fail": False, "commit": False, "stall": False}
 NARRATOR_LEAVE_ALL = {"on": False}
 NARRATOR_CLOSE = {"on": False}
 FEASIBILITY_MODE = {"blocked": False}
+SCENE_EXIT = {"on": False}
 DIRECT_MODE = {
     "addressed_to": "MATSUDA",
     "speaker_order": ["MATSUDA", "SOICHIRO"],
@@ -100,6 +102,14 @@ def _fake_model(agent, user=None):
             location="NPA Cafeteria",
             who_is_around=["MATSUDA"],
         )
+    if agent == "scene_exit":
+        if SCENE_EXIT["on"]:
+            return SceneExitDecision(
+                should_exit=True,
+                reason="Scene has run its course.",
+                characters_left=["MATSUDA"],
+            )
+        return SceneExitDecision(should_exit=False)
     if agent == "scene_director":
         return SceneDirectionOutput(
             addressed_to=DIRECT_MODE["addressed_to"],

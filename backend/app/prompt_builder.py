@@ -189,6 +189,72 @@ def build_cast_prompt(
 
 
 # ---------------------------------------------------------------------------
+# Scene Exit Decision (runs every turn in live scene)
+# ---------------------------------------------------------------------------
+
+def build_scene_exit_prompt(
+    mission: dict | None,
+    present_ids: list[str],
+    character_states: dict[str, Any],
+    conversation: list[dict[str, str]],
+    turns_elapsed: int,
+    new_player_input: str,
+) -> tuple[str, dict]:
+    """Decide whether the scene should end now.
+
+    Checks three things:
+    1. Does the player want to leave? (goodbye signals in input)
+    2. Has a character walked away? (trust crashed, suspicion maxed)
+    3. Has the conversation run its natural course? (mission done, awkward silence, turn limit)
+    """
+    live_stats = {}
+    for cid in present_ids:
+        s = character_states.get(cid, {})
+        live_stats[cid] = s.get("stats", {})
+
+    system = (
+        "You are the Scene Exit Judge for a live negotiation scene.\n"
+        "Your job: decide if the scene should end RIGHT NOW.\n"
+        "Check three signals:\n\n"
+        "1. PLAYER WANTS TO LEAVE: The player said goodbye, asked to leave, "
+        "or indicated they are done (e.g. 'I need to go', 'see you later', 'bye').\n\n"
+        "2. CHARACTER WALKED AWAY: A present character's stats indicate they "
+        "would leave — trust <= 2, or suspicion >= 8, or stress >= 9. "
+        "A character in that state would excuse themselves or walk out.\n\n"
+        "3. CONVERSATION NATURALLY ENDED: The mission objective was clearly "
+        "achieved or clearly failed, the conversation hit an awkward pause, "
+        "or the exchange has gone on long enough (turns_elapsed >= 12). "
+        "Don't end it too early — give the player room to work.\n\n"
+        "Rules:\n"
+        "- If ANY signal fires, set should_exit = true.\n"
+        "- characters_left: list the character ids who are leaving "
+        "(from a walked-away character, or empty if only the player is leaving).\n"
+        "- reason: one sentence explaining why.\n"
+        "- If nothing signals exit, set should_exit = false and leave the rest empty.\n"
+        "- Do NOT end the scene just because the turn count is low (< 8). "
+        "Only flag turn-based exit when turns_elapsed >= 12.\n"
+        "- Output ONLY JSON matching the schema exactly. No extra text, no markdown."
+    )
+    user = {
+        "task": "Decide if this scene should end.",
+        "present_characters": present_ids,
+        "live_stats": live_stats,
+        "turns_elapsed": turns_elapsed,
+        "new_player_input": new_player_input,
+        "recent_conversation": conversation[-10:] if conversation else [],
+    }
+    if mission:
+        user["mission_title"] = mission.get("title", "")
+        user["mission_objective"] = mission.get("objective", "")
+    user["output_schema"] = {
+        "should_exit": "bool",
+        "reason": "str - why the scene ends, or empty if it doesn't",
+        "characters_left": ["character ids who are walking out of the scene"],
+    }
+    return system, user
+
+
+# ---------------------------------------------------------------------------
 # Action Mission Architect (runs once per declared action)
 # ---------------------------------------------------------------------------
 

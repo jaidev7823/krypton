@@ -31,6 +31,7 @@ from .prompt_builder import (
     build_r2_prompt,
     build_r3_prompt,
     build_scene_direction_prompt,
+    build_scene_exit_prompt,
     build_world_tick_prompt,
     stat_readout,
 )
@@ -48,6 +49,7 @@ from .types import (
     NarratorOutput,
     PlayerSetup,
     SceneDirectionOutput,
+    SceneExitDecision,
     SceneExitHook,
     SkillBible,
     SkillFeedback,
@@ -362,6 +364,26 @@ def _run_mission_eval(
     except Exception as e:
         logger.warning("Mission eval failed: %s", e)
         return None
+
+
+def _run_scene_exit_check(
+    player, world, mission_state, character_states, conversation,
+    present_ids, new_player_input, on_attempt=None,
+) -> SceneExitDecision:
+    """Check if the scene should end this turn."""
+    mission = mission_state.get("current_mission")
+    turns = int(mission_state.get("turns_elapsed") or 0)
+    system, user = build_scene_exit_prompt(
+        mission, present_ids, character_states, conversation, turns, new_player_input,
+    )
+    try:
+        return llm_caller.call_json(
+            system, user, SceneExitDecision,
+            agent="scene_exit", on_attempt=on_attempt("scene_exit") if on_attempt else None,
+        )
+    except Exception as e:
+        logger.warning("Scene exit check failed: %s", e)
+        return SceneExitDecision(should_exit=False)
 
 
 def _determine_present_ids(
@@ -720,39 +742,27 @@ def _run_live_turn(
 
     mission_state["turns_elapsed"] = int(mission_state.get("turns_elapsed") or 0) + 1
 
-    # --- R3 narrator (temporarily disabled) ---
+    # --- Scene exit check ---
     r3 = NarratorOutput(narration="", where="", why_here="")
-    # r3_system, r3_user = build_r3_prompt(
-    #     world,
-    #     player,
-    #     sctx,
-    #     r1.model_dump(mode="json"),
-    #     [o.model_dump(mode="json") for o in r2_outputs],
-    #     turn_conversation,
-    #     speakers=speakers,
-    #     silent=silent,
-    # )
-    # r3 = llm_caller.call_json(
-    #     r3_system, r3_user, NarratorOutput, agent="narrator", on_attempt=on_attempt("narrator")
-    # )
-
-    # if silent:
-    #     for om in r3.observer_memories:
-    #         if om.character in character_states and om.note.strip():
-    #             mem = character_states[om.character].setdefault("memory", [])
-    #             if isinstance(mem, list) and om.note.strip() not in mem:
-    #                 mem.append(om.note.strip())
-    #                 character_states[om.character]["memory"] = mem[-5:]
-
-    closed = _scene_exit_detected(
-        r3.scene_update.model_dump(mode="json"), present_ids,
-        int(mission_state.get("turns_elapsed") or 0),
+    exit_decision = _run_scene_exit_check(
+        player, world, mission_state, character_states, conversation,
+        present_ids, body.new_player_input, on_attempt=on_attempt,
     )
 
+    closed = exit_decision.should_exit
+    turns_elapsed = int(mission_state.get("turns_elapsed") or 0)
+    if not closed and turns_elapsed >= 15:
+        closed = True
+        exit_decision.reason = "Scene has gone on too long."
+    if closed and exit_decision.characters_left:
+        for cid in exit_decision.characters_left:
+            if cid in character_states:
+                character_states[cid]["present"] = False
+        present_ids = [cid for cid in present_ids if cid not in exit_decision.characters_left]
+        mission_state["present_ids"] = present_ids
+        _sync_presence(character_states, present_ids)
+
     hooks: list[SceneExitHook] = []
-    # hooks = _scene_exit_hooks(r3)
-    # if hooks:
-    #     mission_state["scene_hooks"] = [h.model_dump(mode="json") for h in hooks]
 
     _world_tick(player, world, mission_state, character_states, present_ids,
                 on_attempt=on_attempt)
