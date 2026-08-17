@@ -720,36 +720,39 @@ def _run_live_turn(
 
     mission_state["turns_elapsed"] = int(mission_state.get("turns_elapsed") or 0) + 1
 
-    r3_system, r3_user = build_r3_prompt(
-        world,
-        player,
-        sctx,
-        r1.model_dump(mode="json"),
-        [o.model_dump(mode="json") for o in r2_outputs],
-        turn_conversation,
-        speakers=speakers,
-        silent=silent,
-    )
-    r3 = llm_caller.call_json(
-        r3_system, r3_user, NarratorOutput, agent="narrator", on_attempt=on_attempt("narrator")
-    )
+    # --- R3 narrator (temporarily disabled) ---
+    r3 = NarratorOutput(narration="", where="", why_here="")
+    # r3_system, r3_user = build_r3_prompt(
+    #     world,
+    #     player,
+    #     sctx,
+    #     r1.model_dump(mode="json"),
+    #     [o.model_dump(mode="json") for o in r2_outputs],
+    #     turn_conversation,
+    #     speakers=speakers,
+    #     silent=silent,
+    # )
+    # r3 = llm_caller.call_json(
+    #     r3_system, r3_user, NarratorOutput, agent="narrator", on_attempt=on_attempt("narrator")
+    # )
 
-    if silent:
-        for om in r3.observer_memories:
-            if om.character in character_states and om.note.strip():
-                mem = character_states[om.character].setdefault("memory", [])
-                if isinstance(mem, list) and om.note.strip() not in mem:
-                    mem.append(om.note.strip())
-                    character_states[om.character]["memory"] = mem[-5:]
+    # if silent:
+    #     for om in r3.observer_memories:
+    #         if om.character in character_states and om.note.strip():
+    #             mem = character_states[om.character].setdefault("memory", [])
+    #             if isinstance(mem, list) and om.note.strip() not in mem:
+    #                 mem.append(om.note.strip())
+    #                 character_states[om.character]["memory"] = mem[-5:]
 
     closed = _scene_exit_detected(
         r3.scene_update.model_dump(mode="json"), present_ids,
         int(mission_state.get("turns_elapsed") or 0),
     )
 
-    hooks = _scene_exit_hooks(r3)
-    if hooks:
-        mission_state["scene_hooks"] = [h.model_dump(mode="json") for h in hooks]
+    hooks: list[SceneExitHook] = []
+    # hooks = _scene_exit_hooks(r3)
+    # if hooks:
+    #     mission_state["scene_hooks"] = [h.model_dump(mode="json") for h in hooks]
 
     _world_tick(player, world, mission_state, character_states, present_ids,
                 on_attempt=on_attempt)
