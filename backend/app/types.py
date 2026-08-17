@@ -231,6 +231,20 @@ class SceneDirectionOutput(PermissiveModel):
     stay_silent: list[str] = Field(default_factory=list)
 
 
+class ActionFeasibility(PermissiveModel):
+    """Can the player realistically do this action right now?"""
+    feasible: bool = True
+    reason: str = ""
+    suggestions: list[str] = Field(default_factory=list)
+
+
+class SceneExitHook(PermissiveModel):
+    """An NPC suggestion extracted from scene exit dialogue."""
+    character: str = ""
+    suggestion: str = ""
+    context: str = ""
+
+
 class NextMission(PermissiveModel):
     title: str = ""
     why_important: str = ""
@@ -261,9 +275,9 @@ class NarratorOutput(PermissiveModel):
     narration: str = ""
     where: str = ""
     why_here: str = ""
-    mission_status: MissionStatus = Field(default_factory=MissionStatus)
     scene_update: SceneUpdate = Field(default_factory=SceneUpdate)
     observer_memories: list[ObserverMemory] = Field(default_factory=list)
+    scene_hooks: list[SceneExitHook] = Field(default_factory=list)
 
 
 class WorldEffect(PermissiveModel):
@@ -273,38 +287,11 @@ class WorldEffect(PermissiveModel):
     reason: str = ""
 
 
-class MissionDebrief(PermissiveModel):
-    message: str = ""
-    location: str = ""
-    who_is_around: list[str] = Field(default_factory=list)
-
-
-class MissionEndOutput(PermissiveModel):
-    """R4 - what a won/failed mission MEANS for the world (consequences)."""
-    severity: str = "mild"
-    action: str = ""
-    character: str = ""
-    world_effects: list[WorldEffect] = Field(default_factory=list)
-    debrief: MissionDebrief = Field(default_factory=MissionDebrief)
-    memory: str = ""
-    event_log: str = ""
-
-
-class NextMissionAdjustment(PermissiveModel):
-    """R6 - how the next outline mission should be rewritten to consume hooks."""
-    title: str = ""
-    description: str = ""
-    location: str = ""
-    characters: list[str] = Field(default_factory=list)
-
-
-class ReconcileOutput(PermissiveModel):
-    """R6 (Scenario Director) - re-align the rough outline with what actually
-    happened in dialogue, so promises made now shape what happens next."""
-    revised_next: Optional[NextMissionAdjustment] = None
-    commitments: list[Commitment] = Field(default_factory=list)
-    material_shift: bool = False
-    shift_summary: str = ""
+class SceneExitSummary(PermissiveModel):
+    """What happened when the scene closed."""
+    hooks: list[SceneExitHook] = Field(default_factory=list)
+    narration: str = ""
+    characters_left: list[str] = Field(default_factory=list)
 
 
 class NpcEffect(PermissiveModel):
@@ -325,81 +312,6 @@ class WorldTickOutput(PermissiveModel):
     """R7 (World Tick) - what NPCs did on their own between missions, so the
     world visibly changes even when the player is focused on one thread."""
     actions: list[NpcAction] = Field(default_factory=list)
-
-
-# ---------------------------------------------------------------------------
-# Piece 4: Mission state persisted per session
-# ---------------------------------------------------------------------------
-
-class Mission(PermissiveModel):
-    id: int = 0
-    title: str = ""
-    description: str = ""
-    why_important: str = ""
-    reason: str = ""  # the world access gate that makes this the accessible step
-    status: str = "lobby"
-    detail_level: str = "detailed"  # detailed (playable) | outline (name+purpose+cast, fleshed on entry)
-    location: str = ""
-    characters: list[str] = Field(default_factory=list)
-    objective: str = ""
-    reward: str = ""
-    win_conditions: list[dict[str, Any]] = Field(default_factory=list)
-    fail_conditions: list[dict[str, Any]] = Field(default_factory=list)
-
-
-class MissionArchitectOutput(PermissiveModel):
-    """R0 output - the fixed mission chain derived from the player's own plan."""
-    mission_chain: list[Mission] = Field(default_factory=list)
-
-
-class FeasibilityBlocker(PermissiveModel):
-    """Why a piece of the player's plan cannot happen right now."""
-    step: str = ""
-    why_blocked: str = ""
-    how_to_unlock: str = ""
-
-
-class FeasibleStep(PermissiveModel):
-    """One concrete step that IS possible now, in world-valid order."""
-    step: str = ""
-    target_character: str = ""
-    objective: str = ""
-    reason: str = ""
-
-
-class FeasibilityReport(PermissiveModel):
-    """World Gate output - judges the player's plan against the world's access.
-
-    The Feasibility Gate (R8) runs before the Mission Architect (R0). R0 must
-    build missions ONLY from `path`, and each mission must carry the `reason`
-    that makes it the accessible step.
-    """
-    feasible: bool = True
-    verdict: str = ""  # one-line verdict on the plan, in-world
-    blockers: list[FeasibilityBlocker] = Field(default_factory=list)
-    path: list[FeasibleStep] = Field(default_factory=list)
-    reframe: str = ""  # a rewritten, feasible version of the player's plan
-
-
-class CharacterProjection(PermissiveModel):
-    """One character's projected starting stance for this world/player."""
-    character_id: str
-    trust: int = 0
-    familiarity: int = 0
-    respect: int = 0
-    suspicion: int = 0
-    rapport: int = 0
-    disclosure_level: int = 0
-    stress: int = 0
-    goal: str = ""
-    problem_solving_framework: str = ""
-    current_problem: str = ""
-    solution: str = ""
-
-
-class CastProjectionOutput(PermissiveModel):
-    """R0-Cast output - how every canon character's stats/goal/problem/solution shift for THIS player."""
-    characters: list[CharacterProjection] = Field(default_factory=list)
 
 
 # ---------------------------------------------------------------------------
@@ -435,19 +347,14 @@ class GameTurnCharacter(PermissiveModel):
     present: bool = True
 
 
-class GameTurnMission(PermissiveModel):
-    id: int = 0
+class GameTurnScene(PermissiveModel):
+    """Current scene context (replaces the old rigid mission card)."""
     title: str = ""
-    description: str = ""
-    why_important: str = ""
-    reason: str = ""
-    status: str = "ongoing"
-    chain_progress: str = ""
     location: str = ""
     characters: list[str] = Field(default_factory=list)
-    objective: str = ""
-    reward: str = ""
-    win_conditions: list[dict[str, Any]] = Field(default_factory=list)
+    reason: str = ""
+    strategic_plan: str = ""
+    scene_hooks: list[SceneExitHook] = Field(default_factory=list)
 
 
 class GameTurn(PermissiveModel):
@@ -455,7 +362,7 @@ class GameTurn(PermissiveModel):
     narration: GameTurnNarration = Field(default_factory=GameTurnNarration)
     messages: list[GameTurnMessage] = Field(default_factory=list)
     characters: list[GameTurnCharacter] = Field(default_factory=list)
-    mission: GameTurnMission = Field(default_factory=GameTurnMission)
+    scene: GameTurnScene = Field(default_factory=GameTurnScene)
     scene_update: SceneUpdate = Field(default_factory=SceneUpdate)
     coach: Optional[Skill] = None
 
@@ -464,8 +371,8 @@ class TurnRequest(PermissiveModel):
     session_id: Optional[str] = None
     player_setup: Optional[PlayerSetup] = None
     new_player_input: str = ""
-    action: str = ""  # "start" | "submit_plan" | "enter_mission" | "turn" | "revise_plan"
-    plan_text: str = ""
+    action: str = ""  # "setup" | "declare_action" | "scene"
+    plan_text: str = ""  # used for strategic plan edits
 
 
 class CoachMessage(PermissiveModel):
@@ -487,10 +394,9 @@ class CoachReply(PermissiveModel):
 class TurnResponse(PermissiveModel):
     session_id: str
     turn: GameTurn
-    game_state: str = ""  # plan_elicitation | plan_revision | mission_lobby | live_mission | complete
-    mission_chain: list[Mission] = Field(default_factory=list)
+    game_state: str = ""  # "setup" | "world" | "live_scene" | "complete"
     world: Optional[WorldBible] = None
-    debrief: Optional[MissionDebrief] = None
     events: list[str] = Field(default_factory=list)
-    reconcile_shift: Optional[str] = None
-    feasibility: Optional[FeasibilityReport] = None
+    feasibility: Optional[ActionFeasibility] = None
+    scene_hooks: list[SceneExitHook] = Field(default_factory=list)
+    strategic_plan: str = ""

@@ -13,7 +13,7 @@ from .types import (
     GameTurn,
     GameTurnCharacter,
     GameTurnMessage,
-    GameTurnMission,
+    GameTurnScene,
     GameTurnNarration,
     NarratorOutput,
     SkillFeedback,
@@ -37,25 +37,18 @@ def merge_turn(
     player_input: str,
     player_name: str,
     characters_state: list[dict[str, Any]],
-    mission_state: Optional[dict[str, Any]],
-    chain_progress: str = "",
+    scene_state: Optional[dict[str, Any]] = None,
 ) -> GameTurn:
     """Build the final GameTurn from the three raw outputs and persisted state."""
 
-    # Narrator + mission
-    ms = r3_output.mission_status
-    mission = GameTurnMission(
-        id=mission_state.get("id", 0) if mission_state else 0,
-        title=mission_state.get("title", "") if mission_state else "",
-        description=mission_state.get("description", "") if mission_state else "",
-        why_important=mission_state.get("why_important", "") if mission_state else "",
-        status=mission_state.get("status", "ongoing") if mission_state else "ongoing",
-        chain_progress=chain_progress or ms.chain_progress,
-        location=mission_state.get("location", "") if mission_state else "",
-        characters=mission_state.get("characters", []) if mission_state else [],
-        objective=mission_state.get("objective", "") if mission_state else "",
-        reward=mission_state.get("reward", "") if mission_state else "",
-        win_conditions=mission_state.get("win_conditions", []) if mission_state else [],
+    # Scene context
+    scene = GameTurnScene(
+        title=scene_state.get("title", "") if scene_state else "",
+        location=scene_state.get("location", "") if scene_state else "",
+        characters=scene_state.get("present_ids", []) if scene_state else [],
+        reason=scene_state.get("reason", "") if scene_state else "",
+        strategic_plan=scene_state.get("strategic_plan", "") if scene_state else "",
+        scene_hooks=[],
     )
 
     # Character summaries (with live stats + deltas + memory + problem/solution)
@@ -121,6 +114,6 @@ def merge_turn(
         narration=narration,
         messages=messages,
         characters=characters,
-        mission=mission,
+        scene=scene,
         scene_update=r3_output.scene_update,
     )

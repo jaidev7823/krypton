@@ -24,36 +24,26 @@ from .audio_service import generate_voice
 from .db import create_session, get_session, last_turn_number, save_session_state, update_player_setup
 from .merge_turn import merge_turn
 from .prompt_builder import (
-    build_cast_prompt,
     build_coach_prompt,
-    build_feasibility_prompt,
-    build_flesh_prompt,
-    build_r0_prompt,
     build_r1_prompt,
     build_r2_prompt,
     build_r3_prompt,
-    build_r4_prompt,
-    build_reconcile_prompt,
     build_scene_direction_prompt,
     build_world_tick_prompt,
+    stat_readout,
 )
 from .types import (
-    CastProjectionOutput,
+    ActionFeasibility,
     CharacterBrainOutput,
     CoachReply,
     CoachRequest,
-    FeasibilityReport,
     GameTurn,
-    GameTurnMission,
     GameTurnNarration,
-    Mission,
-    MissionArchitectOutput,
-    MissionDebrief,
-    MissionEndOutput,
+    GameTurnScene,
     NarratorOutput,
     PlayerSetup,
-    ReconcileOutput,
     SceneDirectionOutput,
+    SceneExitHook,
     SkillBible,
     SkillFeedback,
     TurnRequest,
@@ -166,14 +156,12 @@ def _dump_or_plain(value) -> Any:
     return value.model_dump(mode="json") if hasattr(value, "model_dump") else value
 
 
-def mission_context(mission_state: dict, scene: dict) -> dict:
-    current = mission_state.get("current") or {}
+def scene_context(mission_state: dict, scene: dict) -> dict:
     return {
-        "current_mission": current,
-        "old_missions_summary": mission_state.get("history", []),
+        "strategic_plan": mission_state.get("strategic_plan", ""),
         "events": mission_state.get("events") or [],
         "scene": scene,
-        "turns_in_mission": int(current.get("turns_elapsed") or 0),
+        "turns_in_scene": int(mission_state.get("turns_elapsed") or 0),
     }
 
 
@@ -189,7 +177,6 @@ STAT_KEY_MAP = {
 
 
 def apply_r2(state: dict, out: CharacterBrainOutput) -> None:
-    """Apply one character's R2 output to the live state."""
     cid = out.character_id
     if cid not in state:
         return
@@ -209,90 +196,23 @@ def apply_r2(state: dict, out: CharacterBrainOutput) -> None:
         char["memory"] = [out.memory.strip()]
 
 
-def chain_progress(mission_state: dict) -> str:
-    chain = mission_state.get("chain") or []
-    return f"{len(mission_state.get('history') or [])}/{len(chain)}"
+SCENE_STALL_LIMIT = 15
 
 
-def _condition_met(cond: dict, character_states: dict) -> bool:
-    """A single win/fail condition: does the character's live stat satisfy it?"""
-    cid = cond.get("character")
-    short = cond.get("stat", "trust")
-    canonical = STAT_KEY_MAP.get(short)
-    if not cid or not canonical:
-        return False
-    value = character_states.get(cid, {}).get("stats", {}).get(canonical, 0)
-    if "min" in cond and value < cond["min"]:
-        return False
-    if "max" in cond and value > cond["max"]:
-        return False
-    return True
-
-
-def mission_outcome(mission: dict, character_states: dict, r3_won: bool) -> str:
-    """Deterministic verdict from the mission's WIN thresholds.
-
-    Returns 'won' or 'ongoing'. A mission is NEVER ended by a stat-based
-    fail condition: low trust/suspicion just means you are not winning yet.
-    Ending is decided separately by SOCIAL closure - the conversation itself
-    being over (everyone left, the player was kicked out, a character walked
-    away). R3's word is used only as a fallback for legacy missions that have
-    no structured conditions.
-    """
-    wins = mission.get("win_conditions") or []
-    if wins:
-        return "won" if all(_condition_met(c, character_states) for c in wins) else "ongoing"
-    return "won" if r3_won else "ongoing"
-
-
-def _outcome_culprits(mission: dict, character_states: dict) -> list[str]:
-    """Which characters tripped a fail condition (i.e. are the reason the mission failed)."""
-    culprits = []
-    for cond in mission.get("fail_conditions") or []:
-        cid = cond.get("character")
-        if cid and _condition_met(cond, character_states) and cid not in culprits:
-            culprits.append(cid)
-    return culprits
-
-
-# A live mission is allowed this many turns before the scene is forced to a
-# close (softlock guard). The narrator is told to wrap up stalled scenes well
-# before this; this is the mechanical backstop.
-MAX_MISSION_TURNS = 8
-
-
-def _social_closure(
-    current: dict,
+def _scene_exit_detected(
     r3_scene: dict,
     present_ids: list[str],
-) -> str:
-    """Decide if the conversation itself is over - independent of stats.
-
-    Returns '' (keep playing) or 'failed' with a reason. The mission ends ONLY
-    on social closure, never on a stat being low.
-    """
+    turns_elapsed: int,
+) -> bool:
+    """Did the scene end naturally? Player left, NPC left, or conversation stalled."""
     if r3_scene.get("conversation_over"):
-        return "failed"
+        return True
     left = set(r3_scene.get("characters_left") or [])
     if present_ids and all(cid in left for cid in present_ids):
-        return "failed"
-    if int(current.get("turns_elapsed") or 0) >= MAX_MISSION_TURNS:
-        return "failed"
-    return ""
-
-
-def apply_world_effects(character_states: dict, effects) -> None:
-    """Persist R4's permanent stat changes into the world (outlive the mission)."""
-    for fx in effects:
-        c = character_states.get(fx.character)
-        if not c:
-            continue
-        canonical = STAT_KEY_MAP.get(fx.stat)
-        if not canonical:
-            continue
-        stats = c["stats"]
-        stats[canonical] = max(0, min(10, stats.get(canonical, 0) + (fx.delta or 0)))
-    return None
+        return True
+    if turns_elapsed >= SCENE_STALL_LIMIT:
+        return True
+    return False
 
 
 def _commitment_key(c: dict) -> str:
@@ -300,11 +220,6 @@ def _commitment_key(c: dict) -> str:
 
 
 def apply_commitments(mission_state: dict, r2_outputs: list[CharacterBrainOutput]) -> None:
-    """Collect explicit commitments characters made this turn into the ledger.
-
-    A commitment only enters the ledger once (dedup by who/what). Each new one
-    is logged as a world event so it reads as an undeniable fact.
-    """
     ledger = mission_state.setdefault("commitments", [])
     events = mission_state.setdefault("events", [])
     for out in r2_outputs:
@@ -323,120 +238,16 @@ def apply_commitments(mission_state: dict, r2_outputs: list[CharacterBrainOutput
         events.append(f"{entry['character']} committed: {entry['about']}.")
 
 
-def apply_mission_state(mission_state: dict, r3: NarratorOutput) -> bool:
-    """Advance the fixed mission chain. The caller has already decided the
-    mission was won via the deterministic stat thresholds (mission_outcome);
-    R3's own verdict is never consulted.
-
-    Never creates missions - the chain was built by R0 from the player's plan.
-    Returns True if the current mission was won (game_state should move on).
-    """
-    current = mission_state.get("current")
-    if not current:
-        return False
-    current["status"] = "won"
-    mission_state.setdefault("history", []).append(
-        f"M{current.get('id', '?')} {current.get('title', '')} - won"
-    )
-    chain = mission_state.get("chain") or []
-    idx = next((i for i, m in enumerate(chain) if m.get("id") == current.get("id")), -1)
-    nxt = chain[idx + 1] if idx >= 0 and idx + 1 < len(chain) else None
-    if nxt:
-        nxt["status"] = "lobby"
-        nxt["turns_elapsed"] = 0
-        mission_state["current"] = nxt
-    else:
-        mission_state["current"] = None
-    return True
-
-
-def _flesh_mission(
-    player: PlayerSetup,
-    world: WorldBible,
-    mission_state: dict,
-    character_states: dict,
-    on_attempt=None,
-) -> None:
-    """Flesh out the current OUTLINE mission into a playable one, at entry time.
-
-    Uses the CURRENT live stats + commitments + events so the objective can
-    follow through on promises made in earlier dialogue.
-    """
-    current = mission_state.get("current")
-    if not current or current.get("detail_level") != "outline":
-        return
-    commit = mission_state.get("commitments") or []
-    events = mission_state.get("events") or []
-    flesh_system, flesh_user = build_flesh_prompt(
-        player, world, current, character_states, commit, events
-    )
-    flesh = llm_caller.call_json(
-        flesh_system, flesh_user, MissionArchitectOutput,
-        agent="mission_flesher",
-        on_attempt=on_attempt("mission_flesher") if on_attempt else None,
-    )
-    chain = mission_state.get("chain") or []
-    for m in flesh.mission_chain:
-        if m.id == current.get("id"):
-            m.status = current.get("status", "lobby")
-            m.detail_level = "detailed"
-            if not m.reason and current.get("reason"):
-                m.reason = current["reason"]  # the access gate survives the fleshing
-            idx = next((i for i, x in enumerate(chain) if x.get("id") == m.id), None)
-            chain[idx] = m.model_dump(mode="json")
-            mission_state["current"] = chain[idx]
-            return
-    # Flesher produced nothing usable -> keep the outline playable (fallback
-    # verdict path) rather than hard-failing the game.
-    current["detail_level"] = "detailed"
-
-
-def _reconcile_next(
-    player: PlayerSetup,
-    world: WorldBible,
-    mission_state: dict,
-    character_states: dict,
-    outcome: str,
-    conversation: list[dict[str, str]],
-    on_attempt=None,
-) -> None:
-    """R6 (Scenario Director): after a mission ends, re-align the rough outline
-    with what actually happened, so dialogue promises shape the next scenario.
-
-    Only runs when there are open commitments worth honoring. Never changes the
-    win/lose math - it only rewrites WHICH scene comes next.
-    """
-    commitments = mission_state.get("commitments") or []
-    open_commitments = [c for c in commitments if c.get("status") == "open"]
-    if not open_commitments:
-        return
-    chain = mission_state.get("chain") or []
-    current_id = (mission_state.get("current") or {}).get("id")
-    idx = next((i for i, m in enumerate(chain) if m.get("id") == current_id), -1)
-    nxt = chain[idx + 1] if idx >= 0 and idx + 1 < len(chain) else None
-    remaining = [m for m in chain[idx + 1:] if m.get("detail_level") == "outline"]
-    if not remaining:
-        return
-    rec_system, rec_user = build_reconcile_prompt(
-        player, world, outcome, conversation, commitments, remaining,
-        mission_state.get("events") or [],
-    )
-    rec = llm_caller.call_json(
-        rec_system, rec_user, ReconcileOutput,
-        agent="scenario_director",
-        on_attempt=on_attempt("scenario_director") if on_attempt else None,
-    )
-    if rec.commitments:
-        cleaned = [c.model_dump(mode="json") for c in rec.commitments if c.character]
-        mission_state["commitments"] = cleaned
-    if rec.revised_next and nxt is not None:
-        nxt["title"] = rec.revised_next.title or nxt.get("title", "")
-        nxt["description"] = rec.revised_next.description or nxt.get("description", "")
-        nxt["location"] = rec.revised_next.location or nxt.get("location", "")
-        nxt["characters"] = rec.revised_next.characters or nxt.get("characters", [])
-    if rec.material_shift and rec.shift_summary.strip():
-        mission_state["reconcile_shift"] = rec.shift_summary.strip()
-        mission_state.setdefault("events", []).append(f"WORLD SHIFT: {rec.shift_summary.strip()}")
+def apply_world_effects(character_states: dict, effects) -> None:
+    for fx in effects:
+        c = character_states.get(fx.character)
+        if not c:
+            continue
+        canonical = STAT_KEY_MAP.get(fx.stat)
+        if not canonical:
+            continue
+        stats = c["stats"]
+        stats[canonical] = max(0, min(10, stats.get(canonical, 0) + (fx.delta or 0)))
 
 
 def _world_tick(
@@ -444,29 +255,23 @@ def _world_tick(
     world: WorldBible,
     mission_state: dict,
     character_states: dict,
-    outcome: str,
+    present_ids: list[str],
     on_attempt=None,
 ) -> None:
-    """R7: the NPCs NOT in the player's mission were busy off-screen.
-
-    Persist their stat drift + log 'Meanwhile...' events so the world visibly
-    keeps moving even when the player is focused on one thread.
-    """
-    current = mission_state.get("current") or {}
+    """R7: NPCs not in the current scene do things off-screen."""
     tick_system, tick_user = build_world_tick_prompt(
-        player, world, outcome, current, character_states,
-        mission_state.get("events") or [],
+        player, world, "ongoing", {},
+        character_states, mission_state.get("events") or [],
     )
     tick = llm_caller.call_json(
         tick_system, tick_user, WorldTickOutput,
         agent="world_tick",
         on_attempt=on_attempt("world_tick") if on_attempt else None,
     )
-    cast = [c for c in (current.get("characters") or [])]
     events = mission_state.setdefault("events", [])
     for a in tick.actions:
         cid = a.character
-        if not cid or cid in cast or cid not in character_states:
+        if not cid or cid in present_ids or cid not in character_states:
             continue
         if a.effects:
             apply_world_effects(character_states, [
@@ -476,6 +281,134 @@ def _world_tick(
         action = a.action.strip()
         if action:
             events.append(f"Meanwhile, {cid} {action}.")
+
+
+def _run_feasibility_check(
+    player: PlayerSetup,
+    world: WorldBible,
+    character_states: dict,
+    action_text: str,
+    mission_state: dict,
+    on_attempt=None,
+) -> ActionFeasibility:
+    """Fast referee: can the player realistically do this right now?"""
+    from .prompt_builder import build_feasibility_check_prompt
+    system, user = build_feasibility_check_prompt(
+        player, world, character_states, action_text, mission_state.get("events") or [],
+    )
+    try:
+        return llm_caller.call_json(
+            system, user, ActionFeasibility,
+            agent="feasibility_check",
+            on_attempt=on_attempt("feasibility_check") if on_attempt else None,
+        )
+    except Exception as e:
+        logger.warning("Feasibility check failed; allowing action: %s", e)
+        return ActionFeasibility(feasible=True, reason="Proceeding.")
+
+
+def _determine_present_ids(
+    action_text: str,
+    world: WorldBible,
+    character_states: dict,
+) -> list[str]:
+    """Figure out who is in the scene based on the player's action + world access metadata."""
+    action_lower = action_text.lower()
+    present = []
+    for char in world.autonomous_players:
+        access = char.access
+        where_lower = access.where.lower()
+        gate_lower = access.gate.lower()
+        name_lower = char.canon_name.lower()
+        id_lower = char.id.lower()
+        if any(k in action_lower for k in [id_lower, name_lower, where_lower]):
+            present.append(char.id)
+        elif access.meetability == "open" and any(
+            k in action_lower for k in where_lower.split()
+        ):
+            present.append(char.id)
+    if not present:
+        for char in world.autonomous_players:
+            if char.access.meetability == "open":
+                present.append(char.id)
+    seen = set()
+    unique = []
+    for cid in present:
+        if cid in character_states and cid not in seen:
+            unique.append(cid)
+            seen.add(cid)
+    return unique
+
+
+def _scene_exit_hooks(r3: NarratorOutput) -> list[SceneExitHook]:
+    """Extract NPC suggestions from the scene exit."""
+    return [h for h in (r3.scene_hooks or []) if h.character and h.suggestion.strip()]
+
+
+def _world_response(
+    session_id: str,
+    mission_state: dict,
+    player: PlayerSetup,
+    world: WorldBible,
+    feasibility: ActionFeasibility | None = None,
+    scene_hooks: list[SceneExitHook] | None = None,
+) -> TurnResponse:
+    narration = "What is your next action?"
+    if mission_state.get("scene_hooks"):
+        hooks = [h if isinstance(h, SceneExitHook) else SceneExitHook(**h)
+                 for h in mission_state["scene_hooks"]]
+        suggestions = "; ".join(f"{h.character}: {h.suggestion}" for h in hooks[:3])
+        narration += f"\n\nIdeas from the last scene: {suggestions}"
+    stored_hooks = [h if isinstance(h, SceneExitHook) else SceneExitHook(**h)
+                    for h in mission_state.get("scene_hooks", [])]
+    turn = GameTurn(
+        turn_id=0,
+        narration=GameTurnNarration(text=narration),
+        scene=GameTurnScene(
+            title="The World",
+            strategic_plan=mission_state.get("strategic_plan", ""),
+            scene_hooks=stored_hooks,
+        ),
+    )
+    return TurnResponse(
+        session_id=session_id,
+        turn=turn,
+        game_state="world",
+        world=world,
+        events=mission_state.get("events") or [],
+        feasibility=feasibility,
+        scene_hooks=scene_hooks or stored_hooks,
+        strategic_plan=mission_state.get("strategic_plan", ""),
+    )
+
+
+def _live_response(
+    session_id: str,
+    mission_state: dict,
+    player: PlayerSetup,
+    world: WorldBible,
+    present_ids: list[str],
+    feasibility: ActionFeasibility | None = None,
+) -> TurnResponse:
+    location = world.world.starting_location
+    title = f"Scene with {', '.join(present_ids)}"
+    turn = GameTurn(
+        turn_id=0,
+        narration=GameTurnNarration(text=f"You step into the scene. {', '.join(present_ids)} are present."),
+        scene=GameTurnScene(
+            title=title,
+            location=location,
+            characters=present_ids,
+            strategic_plan=mission_state.get("strategic_plan", ""),
+        ),
+    )
+    return TurnResponse(
+        session_id=session_id,
+        turn=turn,
+        game_state="live_scene",
+        events=mission_state.get("events") or [],
+        feasibility=feasibility,
+    )
 
 
 
@@ -547,324 +480,78 @@ def _run_turn(body: TurnRequest) -> TurnResponse:
     if not row.character_states:
         row.character_states = seed_character_states(world)
     character_states = row.character_states
-    mission_state = row.mission_state or {"chain": [], "current": None, "history": []}
+    mission_state = row.mission_state or {
+        "strategic_plan": "",
+        "scene_hooks": [],
+        "events": [],
+        "commitments": [],
+        "present_ids": [],
+        "turns_elapsed": 0,
+    }
     conversation = row.conversation
 
-    action = body.action or "turn"
-    own_plan = (player.own_plan or "").strip()
-
-    # Every LLM call is audited - plan-time agents log under turn 0 since no
-    # mission turn has happened yet.
+    action = body.action or "scene"
+    strategic_plan = mission_state.get("strategic_plan", "").strip()
     on_attempt = _make_agent_logger(row.id, 0)
 
     # ------------------------------------------------------------------
-    # STATE 0: previous plan FLOOPED -> the player must propose a new one.
-    # The cast is NOT re-projected - stats and memories survive the flop.
+    # STATE 0: Setup — player submits character + strategic plan.
     # ------------------------------------------------------------------
-    if mission_state.get("plan_flopped") and not mission_state.get("chain"):
-        if action == "submit_plan":
-            plan = (body.plan_text or "").strip()
-            if not plan:
-                raise HTTPException(400, "plan_text required for submit_plan")
-            player.own_plan = plan
-            update_player_setup(row.id, player.model_dump(mode="json"))
-            mission_state["plan_flopped"] = False
-            mission_state["events"] = mission_state.get("events") or []
-            mission_state = _build_mission_chain(
-                player, world, mission_state, character_states,
-                on_attempt=on_attempt, reproject=False,
-            )
-            save_session_state(row.id, mission_state, character_states, conversation)
-            return _lobby_response(row.id, mission_state, player, world)
-        return _plan_revision_response(row.id, mission_state, player, world)
-
-    # ------------------------------------------------------------------
-    # STATE 1: no plan yet -> elicit it. NO LLM.
-    # ------------------------------------------------------------------
-    if not own_plan:
-        if action == "submit_plan":
-            plan = (body.plan_text or "").strip()
-            if not plan:
-                raise HTTPException(400, "plan_text required for submit_plan")
-            player.own_plan = plan
-            update_player_setup(row.id, player.model_dump(mode="json"))
-            mission_state = _build_mission_chain(player, world, mission_state, character_states, on_attempt=on_attempt)
-            save_session_state(row.id, mission_state, character_states, conversation)
-            return _lobby_response(row.id, mission_state, player, world)
-        return _plan_response(row.id, player, world)
-
-    # ------------------------------------------------------------------
-    # STATE 2 recovery: plan exists but chain was never built.
-    # ------------------------------------------------------------------
-    if not mission_state.get("chain"):
-        mission_state = _build_mission_chain(player, world, mission_state, character_states, on_attempt=on_attempt)
+    if action == "setup":
+        plan = (body.plan_text or body.new_player_input or "").strip()
+        if not plan:
+            raise HTTPException(400, "strategic plan required")
+        mission_state["strategic_plan"] = plan
+        mission_state["present_ids"] = []
+        mission_state["turns_elapsed"] = 0
         save_session_state(row.id, mission_state, character_states, conversation)
-
-    current = mission_state.get("current")
-
-    # All missions done.
-    if current is None:
-        return _complete_response(row.id, mission_state, player)
+        return _world_response(row.id, mission_state, player, world)
 
     # ------------------------------------------------------------------
-    # STATE 3: mission lobby (or retry after a failure). NO LLM until Enter Mission.
+    # STATE 1: World / Action Declaration — player declares what they do next.
     # ------------------------------------------------------------------
-    if current.get("status") in ("lobby", "failed"):
-        if action == "enter_mission":
-            # Outline missions are fleshed out NOW so the playable detail can
-            # use the latest stats + any promises made in earlier dialogue.
-            _flesh_mission(player, world, mission_state, character_states, on_attempt=on_attempt)
-            current = mission_state["current"]
-            current["status"] = "active"
-            current["turns_elapsed"] = 0
+    if action == "declare_action":
+        action_text = body.new_player_input.strip()
+        if not action_text:
+            raise HTTPException(400, "action required")
+
+        feasibility = _run_feasibility_check(
+            player, world, character_states, action_text, mission_state,
+            on_attempt=on_attempt,
+        )
+        if not feasibility.feasible:
+            _world_tick(player, world, mission_state, character_states,
+                        mission_state.get("present_ids") or [], on_attempt=on_attempt)
             save_session_state(row.id, mission_state, character_states, conversation)
-            return _live_response(row.id, mission_state, player)
-        if action == "revise_plan":
-            # Voluntary re-plan: same semantics as a plan flop - the chain is
-            # voided but stats/memories/commitments survive.
-            mission_state["plan_flopped"] = True
-            mission_state["chain"] = []
-            mission_state["current"] = None
-            mission_state["reconcile_shift"] = None
-            save_session_state(row.id, mission_state, character_states, conversation)
-            return _plan_revision_response(row.id, mission_state, player, world)
-        return _lobby_response(row.id, mission_state, player, world)
+            return _world_response(
+                row.id, mission_state, player, world, feasibility=feasibility,
+            )
+
+        present_ids = _determine_present_ids(action_text, world, character_states)
+        if not present_ids:
+            present_ids = [c.id for c in world.autonomous_players[:1]]
+
+        mission_state["present_ids"] = present_ids
+        mission_state["turns_elapsed"] = 0
+        _sync_presence(character_states, present_ids)
+        save_session_state(row.id, mission_state, character_states, conversation)
+        return _live_response(row.id, mission_state, player, world, present_ids, feasibility=feasibility)
 
     # ------------------------------------------------------------------
-    # STATE 4: LIVE MISSION - R1 + R2 + R3, cast locked to the mission.
+    # STATE 2: Live Scene — R1 + Scene Director + R2 + R3 loop.
     # ------------------------------------------------------------------
     return _run_live_turn(
-        body, row, player, world, skill, mission_state, character_states, conversation, action
+        body, row, player, world, skill, mission_state, character_states, conversation,
     )
 
 
-def _mission_cast(current: dict, character_states: dict) -> list[str]:
-    """Characters allowed in the room this turn = the active mission's cast."""
-    cast = current.get("characters") or []
-    return [cid for cid in cast if cid in character_states]
+def _mission_cast(current_ids: list[str], character_states: dict) -> list[str]:
+    return [cid for cid in current_ids if cid in character_states]
 
 
 def _sync_presence(character_states: dict, present_ids: list[str]) -> None:
     for cid, s in character_states.items():
         s["present"] = cid in present_ids
-
-
-def _run_cast_projection(
-    player: PlayerSetup,
-    world: WorldBible,
-    character_states: dict,
-    on_attempt=None,
-) -> None:
-    """R0-Cast: reset each character's stance from zero and let the LLM project
-    new stats, goal, current problem and solution from the player's profile + canon."""
-    system, user = build_cast_prompt(player, world)
-    out = llm_caller.call_json(
-        system, user, CastProjectionOutput,
-        agent="caster", on_attempt=on_attempt("caster") if on_attempt else None,
-    )
-    for p in out.characters:
-        c = character_states.get(p.character_id)
-        if not c:
-            continue
-        stats = c["stats"]
-        stats["trust_towards_player"] = max(0, min(10, p.trust))
-        stats["familiarity_towards_player"] = max(0, min(10, p.familiarity))
-        stats["respect_towards_player"] = max(0, min(10, p.respect))
-        stats["suspicion_towards_player"] = max(0, min(10, p.suspicion))
-        stats["rapport_towards_player"] = max(0, min(10, p.rapport))
-        stats["disclosure_level"] = max(0, min(10, p.disclosure_level))
-        stats["stress"] = max(0, min(10, p.stress))
-        if p.goal:
-            c["goal"] = p.goal
-        if p.current_problem or p.solution:
-            c["current_problem"] = p.current_problem or c.get("current_problem", "")
-            c["solution"] = p.solution or c.get("solution", "")
-        if p.problem_solving_framework:
-            c["problem_solving_framework"] = p.problem_solving_framework
-
-
-def _run_feasibility(
-    player: PlayerSetup,
-    world: WorldBible,
-    character_states: dict,
-    mission_state: dict,
-    on_attempt=None,
-) -> FeasibilityReport:
-    """R8 World Gate - judge the player's plan against the world's access rules.
-
-    Returns an empty, permissive report if the Gate fails so the game never
-    softlocks on a new agent (R0 then falls back to free-form planning).
-    """
-    try:
-        system, user = build_feasibility_prompt(
-            player, world, character_states,
-            events=mission_state.get("events") or [],
-        )
-        report = llm_caller.call_json(
-            system, user, FeasibilityReport,
-            agent="feasibility_gate",
-            on_attempt=on_attempt("feasibility_gate") if on_attempt else None,
-        )
-        return report
-    except Exception as e:
-        logger.warning("World Gate failed; falling back to free-form planning: %s", e)
-        return FeasibilityReport(feasible=True)
-
-
-def _build_mission_chain(
-    player: PlayerSetup,
-    world: WorldBible,
-    mission_state: dict,
-    character_states: dict,
-    on_attempt=None,
-    reproject: bool = True,
-) -> dict:
-    """STATE 2 - project the cast (R0-Cast), judge feasibility (World Gate),
-    then run the Mission Architect (R0) on the feasible path.
-
-    reproject=False is used when the player revises a failed plan: the cast is
-    NOT reset - live stats and memories survive so characters remember the
-    player and the world keeps its damage.
-    """
-    if reproject:
-        _run_cast_projection(player, world, character_states, on_attempt=on_attempt)
-    feasibility = _run_feasibility(
-        player, world, character_states, mission_state, on_attempt=on_attempt
-    )
-    mission_state["feasibility"] = feasibility.model_dump(mode="json")
-    path = [s.model_dump(mode="json") for s in feasibility.path]
-    r0_system, r0_user = build_r0_prompt(
-        player, world, character_states, feasibility_path=path or None
-    )
-    r0 = llm_caller.call_json(
-        r0_system, r0_user, MissionArchitectOutput,
-        agent="mission_architect",
-        on_attempt=on_attempt("mission_architect") if on_attempt else None,
-    )
-    chain = [m.model_dump(mode="json") for m in r0.mission_chain]
-    if not chain:
-        raise HTTPException(500, "Mission Architect returned an empty mission chain")
-    chain[0]["status"] = "lobby"
-    chain[0]["detail_level"] = "detailed"
-    for m in chain[1:]:
-        m["detail_level"] = "outline"
-        m.setdefault("objective", "")
-        m.setdefault("reward", "")
-        m.setdefault("win_conditions", [])
-        m.setdefault("fail_conditions", [])
-    mission_state["chain"] = chain
-    mission_state["current"] = chain[0]
-    mission_state["history"] = mission_state.get("history") or []
-    mission_state.setdefault("commitments", [])
-    mission_state["reconcile_shift"] = None
-    return mission_state
-
-def _mission_turn(turn_id: int, mission_state: dict, narration: str) -> GameTurn:
-    current = mission_state.get("current") or {}
-    return GameTurn(
-        turn_id=turn_id,
-        narration=GameTurnNarration(text=narration),
-        mission=GameTurnMission(
-            id=current.get("id", 0),
-            title=current.get("title", ""),
-            description=current.get("description", ""),
-            why_important=current.get("why_important", ""),
-            reason=current.get("reason", ""),
-            status=current.get("status", "lobby"),
-            chain_progress=chain_progress(mission_state),
-            location=current.get("location", ""),
-            characters=current.get("characters", []),
-            objective=current.get("objective", ""),
-            reward=current.get("reward", ""),
-        ),
-    )
-
-
-def _plan_response(session_id: str, player: PlayerSetup, world: WorldBible) -> TurnResponse:
-    turn = _mission_turn(0, {"chain": [], "current": None, "history": []},
-                         "Define your plan. The world will wait.")
-    return TurnResponse(session_id=session_id, turn=turn,
-                        game_state="plan_elicitation", mission_chain=[], world=world,
-                        events=[])
-
-
-def _lobby_response(session_id: str, mission_state: dict, player: PlayerSetup, world: WorldBible) -> TurnResponse:
-    current = mission_state.get("current") or {}
-    if current.get("status") == "failed":
-        narration = (
-            f"Mission M{current.get('id', '?')} failed. The conversation broke down and "
-            f"{', '.join(current.get('characters') or [])} left. You'll have to try again."
-        )
-    else:
-        narration = (
-            f"Mission M{current.get('id', '?')}: {current.get('title', '')}. "
-            f"{current.get('objective', '')}"
-        )
-    turn = _mission_turn(0, mission_state, narration)
-    chain = mission_state.get("chain") or []
-    return TurnResponse(session_id=session_id, turn=turn, game_state="mission_lobby",
-                        mission_chain=[Mission.model_validate(m) for m in chain], world=world,
-                        events=mission_state.get("events") or [],
-                        reconcile_shift=mission_state.get("reconcile_shift"),
-                        feasibility=FeasibilityReport.model_validate(mission_state["feasibility"])
-                        if mission_state.get("feasibility") else None)
-
-
-def _plan_revision_response(
-    session_id: str, mission_state: dict, player: PlayerSetup, world: WorldBible
-) -> TurnResponse:
-    """STATE: the previous plan flopped - the player must propose a new one.
-
-    Nothing is reset: live stats, memories and the failure debrief all survive.
-    """
-    debrief = mission_state.get("plan_flop_debrief") or {}
-    message = (
-        debrief.get("message")
-        or "Your plan fell apart. Where do you go from here? What is your new plan?"
-    )
-    where = debrief.get("location") or ""
-    around = debrief.get("who_is_around") or []
-    location = (f" You're at {where}." if where else "") or " You're back where the plan broke down."
-    around_txt = f" Nearby: {', '.join(around)}." if around else ""
-    events = mission_state.get("events") or []
-    if events:
-        around_txt += f"\nWhat happened: {' '.join(events[-2:])}"
-    narration = message + location + around_txt
-    turn = _mission_turn(
-        0, {"chain": [], "current": None, "history": mission_state.get("history") or []},
-        narration,
-    )
-    return TurnResponse(
-        session_id=session_id,
-        turn=turn,
-        game_state="plan_revision",
-        mission_chain=[],
-        world=world,
-        debrief=MissionDebrief(message=message, location=where, who_is_around=around),
-        events=mission_state.get("events") or [],
-    )
-
-
-def _live_response(session_id: str, mission_state: dict, player: PlayerSetup) -> TurnResponse:
-    current = mission_state.get("current") or {}
-    narration = (
-        f"You step into {current.get('location', 'the scene')} for "
-        f"'{current.get('title', '')}'. {current.get('objective', '')}"
-    )
-    turn = _mission_turn(0, mission_state, narration)
-    return TurnResponse(session_id=session_id, turn=turn, game_state="live_mission",
-                        mission_chain=mission_state.get("chain") or [],
-                        events=mission_state.get("events") or [])
-
-
-def _complete_response(session_id: str, mission_state: dict, player: PlayerSetup) -> TurnResponse:
-    turn = _mission_turn(
-        0, mission_state,
-        "All missions complete. Your plan is fulfilled - the world remembers what you did.",
-    )
-    return TurnResponse(session_id=session_id, turn=turn, game_state="complete",
-                        mission_chain=mission_state.get("chain") or [],
-                        events=mission_state.get("events") or [])
 
 
 def _run_live_turn(
@@ -876,43 +563,27 @@ def _run_live_turn(
     mission_state: dict,
     character_states: dict,
     conversation: list,
-    action: str,
 ) -> TurnResponse:
-    """STATE 4 - the original R1 + R2 + R3 loop, run per active mission turn."""
     turn_number = last_turn_number(row.id) + 1
-    current = mission_state["current"]
+    present_ids = mission_state.get("present_ids") or []
 
     on_attempt = _make_agent_logger(row.id, turn_number)
 
-    # The room contains ONLY the active mission's cast - never the full bible.
-    present_ids = _mission_cast(current, character_states)
     _sync_presence(character_states, present_ids)
 
     scene = {
-        "location": current.get("location") or world.world.starting_location,
+        "location": world.world.starting_location,
         "characters_present": present_ids,
     }
-    mctx = mission_context(mission_state, scene)
+    sctx = scene_context(mission_state, scene)
 
-    # R1 - Listener / Teacher
-    r1_system, r1_user = build_r1_prompt(skill, player, mctx, body.new_player_input, conversation)
+    r1_system, r1_user = build_r1_prompt(skill, player, sctx, body.new_player_input, conversation)
     r1 = llm_caller.call_json(
         r1_system, r1_user, SkillFeedback, agent="listener", on_attempt=on_attempt("listener")
     )
 
-    # The brain must see the player's LATEST message. The persisted `conversation`
-    # only contains prior turns - the new input is appended AFTER R2 runs. So build
-    # a per-turn copy that ends with the player's newest words.
     turn_conversation = list(conversation) + [{"speaker": "PLAYER", "text": body.new_player_input}]
 
-    # R2 - Character Brains, SEQUENTIAL and ordered. The Scene Director decides
-    # who the player aimed at, who reacts and in what order, and who stays
-    # silent. Each speaker sees the dialogue spoken BEFORE them this turn, so
-    # replies chain into a real conversation instead of everyone reacting to
-    # the player in isolation. Silent characters get no brain call - their
-    # stats stay put and R3 writes their observer memory instead.
-    # The brain judges ONLY the player's words - the R1 skill analysis is
-    # intentionally NOT passed to it.
     speakers: list[str] = present_ids
     silent: list[str] = []
     addressed_to: Optional[str] = None
@@ -931,7 +602,7 @@ def _run_live_turn(
                 if cid in present_ids
             }
             dir_system, dir_user = build_scene_direction_prompt(
-                body.new_player_input, mctx, present_ids, summaries
+                body.new_player_input, sctx, present_ids, summaries
             )
             direction = llm_caller.call_json(
                 dir_system, dir_user, SceneDirectionOutput,
@@ -945,8 +616,6 @@ def _run_live_turn(
             logger.warning("Scene Director failed; falling back to cast order")
             speakers, silent, addressed_to = present_ids, [], None
 
-        # Mechanical guarantees: the addressed character ALWAYS speaks first,
-        # and at least one speaker always exists (never an empty floor).
         if addressed_to:
             speakers = [addressed_to] + [c for c in speakers if c != addressed_to]
         speakers = speakers or present_ids
@@ -958,7 +627,7 @@ def _run_live_turn(
         char = character_states[cid]
         r2_system, r2_user = build_r2_prompt(
             character=char,
-            mission_context=mctx,
+            mission_context=sctx,
             conversation=turn_conversation,
             new_player_input=body.new_player_input,
             world_name=world.world.name,
@@ -973,28 +642,17 @@ def _run_live_turn(
         if out.dialogue.strip():
             in_turn_before.append({"speaker": out.character_id, "text": out.dialogue})
 
-    # Apply state changes FIRST so the mission verdict reads the post-turn stats.
     for out in r2_outputs:
         apply_r2(character_states, out)
-    # Hooks ledger: explicit promises made this turn (deduped + logged as events).
     apply_commitments(mission_state, r2_outputs)
-    # Presence is ALWAYS the mission cast - ignore R3's scene_update so the
-    # model can never drag in characters that are not part of the mission.
     _sync_presence(character_states, present_ids)
 
-    # Turn counter for THIS mission (feeds R3 + the social-closure backstop).
-    current["turns_elapsed"] = int(current.get("turns_elapsed") or 0) + 1
+    mission_state["turns_elapsed"] = int(mission_state.get("turns_elapsed") or 0) + 1
 
-    # Deterministic mission verdict: WIN only. The mission is NOT over just
-    # because a stat is low - it only closes when the conversation closes.
-    outcome = mission_outcome(current, character_states, False)
-
-    # R3 - Narrator (the win verdict is already decided; it only narrates it)
-    r3_mctx = {**mctx, "computed_mission_outcome": outcome}
     r3_system, r3_user = build_r3_prompt(
         world,
         player,
-        r3_mctx,
+        sctx,
         r1.model_dump(mode="json"),
         [o.model_dump(mode="json") for o in r2_outputs],
         turn_conversation,
@@ -1005,9 +663,6 @@ def _run_live_turn(
         r3_system, r3_user, NarratorOutput, agent="narrator", on_attempt=on_attempt("narrator")
     )
 
-    # Silent characters observed the scene without speaking - R3 wrote each a
-    # one-line memory note. Append them (capped) so their state catches up next
-    # time they actually speak, without spending a brain call this turn.
     if silent:
         for om in r3.observer_memories:
             if om.character in character_states and om.note.strip():
@@ -1016,72 +671,17 @@ def _run_live_turn(
                     mem.append(om.note.strip())
                     character_states[om.character]["memory"] = mem[-5:]
 
-    # SOCIAL CLOSURE: the mission ends only when the conversation itself is
-    # over - the player was kicked out, every character left/walked away, or
-    # the scene has run its course (turn cap backstop). Never because a stat
-    # is low. R3 only REPORTS the closure; the verdict is mechanical here.
-    if outcome != "won":
-        closed = _social_closure(current, r3.scene_update.model_dump(mode="json"), present_ids)
-        if closed:
-            outcome = "failed"
-            if int(current.get("turns_elapsed") or 0) >= MAX_MISSION_TURNS and not (
-                r3.scene_update.conversation_over
-                or (present_ids and all(
-                    cid in (r3.scene_update.characters_left or []) for cid in present_ids
-                ))
-            ):
-                mission_state.setdefault("events", []).append(
-                    "The conversation ran its course with no breakthrough - everyone drifted apart."
-                )
+    closed = _scene_exit_detected(
+        r3.scene_update.model_dump(mode="json"), present_ids,
+        int(mission_state.get("turns_elapsed") or 0),
+    )
 
-    # R4 - Mission End Director: what the end MEANS for the world.
-    # Runs only when the mission is definitively won or failed.
-    r4: MissionEndOutput | None = None
-    if outcome in ("won", "failed"):
-        culprits = _outcome_culprits(current, character_states) if outcome == "failed" else []
-        culprit_states = {cid: character_states.get(cid) for cid in culprits}
-        r4_system, r4_user = build_r4_prompt(
-            outcome=outcome,
-            mission_context=mctx,
-            culprit_states=culprit_states,
-            r2_outputs=[o.model_dump(mode="json") for o in r2_outputs],
-            player=player,
-            world=world,
-            conversation=turn_conversation,
-        )
-        r4 = llm_caller.call_json(
-            r4_system, r4_user, MissionEndOutput,
-            agent="mission_end", on_attempt=on_attempt("mission_end"),
-        )
-        apply_world_effects(character_states, r4.world_effects)
-        if r4.character in character_states and r4.memory.strip():
-            character_states[r4.character]["memory"] = [r4.memory.strip()]
-        if r4.event_log.strip():
-            mission_state.setdefault("events", []).append(r4.event_log.strip())
+    hooks = _scene_exit_hooks(r3)
+    if hooks:
+        mission_state["scene_hooks"] = [h.model_dump(mode="json") for h in hooks]
 
-        # R7 - World Tick: everyone else in the world kept moving while the
-        # player was locked into this mission. Runs on BOTH win and fail.
-        _world_tick(player, world, mission_state, character_states, outcome,
-                    on_attempt=on_attempt)
-
-    if outcome == "won":
-        # R6 - Scenario Director FIRST (while `current` is still the finished
-        # mission): re-align the next rough outline with commitments made in
-        # dialogue, then let apply_mission_state advance onto the revised entry.
-        _reconcile_next(
-            player, world, mission_state, character_states, outcome,
-            turn_conversation, on_attempt=on_attempt,
-        )
-        apply_mission_state(mission_state, r3)
-    elif outcome == "failed":
-        # PLAN FLOP: the whole chain is void - the world keeps the damage and
-        # the player must propose a new plan. Memory + stats survive.
-        mission_state["plan_flopped"] = True
-        mission_state["plan_flop_debrief"] = r4.debrief.model_dump(mode="json")
-        around = [c for c in (r4.debrief.who_is_around or []) if c in character_states]
-        _sync_presence(character_states, around)
-        mission_state["chain"] = []
-        mission_state["current"] = None
+    _world_tick(player, world, mission_state, character_states, present_ids,
+                on_attempt=on_attempt)
 
     for msg in [{"speaker": "PLAYER", "text": body.new_player_input}]:
         conversation.append(msg)
@@ -1097,13 +697,8 @@ def _run_live_turn(
         player_input=body.new_player_input,
         player_name=player.character_name,
         characters_state=list(character_states.values()),
-        mission_state=mission_state.get("current"),
-        chain_progress=chain_progress(mission_state),
+        scene_state=mission_state,
     )
-    if r4 and r4.debrief.message.strip():
-        game_turn.narration.text = (
-            f"{game_turn.narration.text}\n\n{r4.debrief.message.strip()}"
-        )
 
     save_session_state(row.id, mission_state, character_states, conversation)
     db.log_turn(
@@ -1118,19 +713,28 @@ def _run_live_turn(
         provider=llm_caller.available_provider(),
     )
 
-    if outcome == "won":
-        game_state = "complete" if mission_state.get("current") is None else "mission_lobby"
-        debrief = r4.debrief if r4 else None
-    elif outcome == "failed":
-        game_state = "plan_revision"
-        debrief = r4.debrief if r4 else None
-    else:
-        game_state = "live_mission"
-        debrief = None
+    if closed:
+        _world_tick(player, world, mission_state, character_states, present_ids,
+                    on_attempt=on_attempt)
+        mission_state["present_ids"] = []
+        mission_state["turns_elapsed"] = 0
+        _sync_presence(character_states, [])
+        save_session_state(row.id, mission_state, character_states, conversation)
+        return TurnResponse(
+            session_id=row.id,
+            turn=game_turn,
+            game_state="world",
+            events=mission_state.get("events") or [],
+            scene_hooks=hooks,
+            strategic_plan=mission_state.get("strategic_plan", ""),
+        )
 
-    return TurnResponse(session_id=row.id, turn=game_turn, game_state=game_state,
-                        mission_chain=mission_state.get("chain") or [], debrief=debrief,
-                        events=mission_state.get("events") or [])
+    return TurnResponse(
+        session_id=row.id,
+        turn=game_turn,
+        game_state="live_scene",
+        events=mission_state.get("events") or [],
+    )
 
 
 @app.post("/api/turn", response_model=TurnResponse)

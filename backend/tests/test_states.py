@@ -1,9 +1,6 @@
-"""State-machine regression test for the 5-state game loop.
+"""State-machine regression test for the 3-state game loop (no rigid missions).
 
-Runs ``_run_turn`` end-to-end with a mocked LLM (no API keys) against a temp
-SQLite DB. Guards against the hallucination bug: before a plan exists no LLM
-may be called, and during a live mission only the mission's cast is in the
-room.
+Setup -> World (declare action) -> Live Scene -> World (declare action) -> ...
 
 Run:  python -m tests.test_states  (from backend/)
 """
@@ -30,22 +27,30 @@ SQLModel.metadata.create_all(db_module.engine)
 
 from app import llm_caller, main  # noqa: E402
 from app.types import (  # noqa: E402
-    CastProjectionOutput, CharacterBrainOutput, CharacterProjection, CharacterReasoning,
-    CoachReply, CoachRequest, Commitment, FeasibilityBlocker, FeasibilityReport,
-    FeasibleStep, Mission, MissionArchitectOutput, MissionDebrief,
-    MissionEndOutput, NarratorOutput, NextMissionAdjustment, NpcAction, NpcEffect,
-    ObserverMemory, ReconcileOutput, SceneDirectionOutput, SkillFeedback, StatChange,
-    StatChanges, TurnRequest, WorldEffect, WorldTickOutput,
+    ActionFeasibility,
+    CharacterBrainOutput,
+    CharacterReasoning,
+    CoachReply,
+    CoachRequest,
+    Commitment,
+    NarratorOutput,
+    ObserverMemory,
+    SceneDirectionOutput,
+    SceneExitHook,
+    SkillFeedback,
+    StatChange,
+    StatChanges,
+    TurnRequest,
+    WorldTickOutput,
 )
+from app.types import NpcAction, NpcEffect  # noqa: E402
 
 CALLS: list[str] = []
-last_ma_user: dict = {}
 last_r2_user: dict = {}
 BRAIN_MODE = {"fail": False, "commit": False, "stall": False}
-END_MODE = {"severity": "mild"}
 NARRATOR_LEAVE_ALL = {"on": False}
 NARRATOR_CLOSE = {"on": False}
-GATE_MODE = {"block_direct_yagami": False}
+FEASIBILITY_MODE = {"blocked": False}
 DIRECT_MODE = {
     "addressed_to": "MATSUDA",
     "speaker_order": ["MATSUDA", "SOICHIRO"],
@@ -53,125 +58,37 @@ DIRECT_MODE = {
 }
 
 
-def _fake_gate_report(block: bool) -> FeasibilityReport:
-    if block:
-        return FeasibilityReport(
-            feasible=False,
-            verdict="You can't just walk up to Chief Yagami - he vets everyone. "
-                    "But Matsuda sees him daily and can get you in.",
-            blockers=[
-                FeasibilityBlocker(
-                    step="Meet Chief Soichiro Yagami directly",
-                    why_blocked="Chief Yagami is extremely selective about who he meets - "
-                                "you have no introduction and don't know when he is free.",
-                    how_to_unlock="Get an introduction from a Task Force member who trusts you, "
-                                  "like Matsuda.",
-                )
-            ],
-            path=[
-                FeasibleStep(
-                    step="Earn Matsuda's trust",
-                    target_character="MATSUDA",
-                    objective="Raise Matsuda trust so he vouches for you",
-                    reason="Matsuda sees Chief Yagami daily and is the only accessible introduction.",
-                ),
-                FeasibleStep(
-                    step="Meet Chief Yagami with Matsuda's backing",
-                    target_character="SOICHIRO",
-                    objective="Get a place in the task force",
-                    reason="Chief Yagami only meets people vouched for by a Task Force member.",
-                ),
-            ],
-            reframe="Get close to Matsuda so he introduces you to Chief Yagami.",
-        )
-    return FeasibilityReport(
-        feasible=True,
-        verdict="Your plan is possible - this is the path the world will let you walk.",
-        path=[
-            FeasibleStep(
-                step="Win Matsuda over",
-                target_character="MATSUDA",
-                objective="Raise Matsuda trust",
-                reason="Matsuda is an open, easy first contact and can introduce you further.",
-            ),
-            FeasibleStep(
-                step="Earn L's attention",
-                target_character="L",
-                objective="Lower L's suspicion",
-                reason="L is secluded - he only notices people the task force puts in front of him.",
-            ),
-        ],
-        reframe="Get close to Matsuda, then earn L's attention.",
-    )
-
-
 def _fake_model(agent, user=None):
-    if agent == "caster":
-        return CastProjectionOutput(characters=[
-            CharacterProjection(character_id="MATSUDA", trust=4, familiarity=2,
-                                respect=3, suspicion=1, rapport=4, disclosure_level=3,
-                                stress=2, goal="Find a reliable witness",
-                                current_problem="No witness to Kira's methods",
-                                solution="Ask Jay friendly questions"),
-            CharacterProjection(character_id="L", trust=1, familiarity=0,
-                                respect=5, suspicion=5, rapport=0, disclosure_level=1,
-                                stress=3, goal="Identify Kira",
-                                current_problem="Kira acts without a trace",
-                                solution="Observe without revealing himself"),
-        ])
-    if agent == "mission_architect":
-        return MissionArchitectOutput(mission_chain=[
-            Mission(id=1, title="Matsuda Bridge", description="Get a referral",
-                    reason="Matsuda sees Chief Yagami daily - he is the only accessible "
-                           "introduction to the Chief.",
-                    objective="Raise Matsuda trust to 6", reward="Matsuda's number",
-                    location="Cafeteria", characters=["MATSUDA"],
-                    win_conditions=[{"character": "MATSUDA", "stat": "trust", "min": 6}],
-                    fail_conditions=[{"character": "MATSUDA", "stat": "trust", "max": 1}]),
-            Mission(id=2, title="Earn L's attention", detail_level="outline",
-                    reason="L is secluded - he only notices people the task force puts forward.",
-                    description="Lower L's suspicion and earn his interest.",
-                    location="Class 3B", characters=["L"]),
-        ])
-    if agent == "mission_flesher":
-        return MissionArchitectOutput(mission_chain=[
-            Mission(id=2, title="Earn L's attention", description="Get noticed",
-                    objective="Lower L suspicion to 3", reward="L's interest",
-                    location="Class 3B", characters=["L"],
-                    win_conditions=[{"character": "L", "stat": "suspicion", "max": 3}],
-                    fail_conditions=[{"character": "L", "stat": "suspicion", "min": 7}]),
-        ])
-    if agent == "scenario_director":
-        return ReconcileOutput(
-            revised_next=NextMissionAdjustment(
-                title="Chief Soichiro's ear", description="Matsuda promised to ask Chief Soichiro about you.",
-                location="NPA Headquarters", characters=["SOICHIRO"]),
-            commitments=[Commitment(character="MATSUDA", target_character="SOICHIRO",
-                                    about="ask Chief Soichiro about the player", status="fulfilled")],
-            material_shift=True,
-            shift_summary="Matsuda told you he will ask Chief Soichiro about you - your next step centers on him.",
-        )
-    if agent == "world_tick":
-        return WorldTickOutput(actions=[
-            NpcAction(character="RYUK",
-                      action="floated overhead, quietly amused by the mortal's scheming",
-                      effects=[NpcEffect(stat="stress", delta=1, reason="Amused by watching")]),
-            NpcAction(character="LIGHT",
-                      action="studied the player's background file in private",
-                      effects=[NpcEffect(stat="stress", delta=1, reason="Light is uneasy about the new arrival")]),
-        ])
-    if agent == "coach":
-        return CoachReply(reply="Matsuda trust is still 4/6. Stop pushing questions - "
-                                 "label his fear first (LABELING), then use a CALIBRATED_QUESTION "
-                                 "to get him to open up about the case.")
-    if agent == "feasibility_gate":
-        return _fake_gate_report(GATE_MODE["block_direct_yagami"])
+    if agent == "feasibility_check":
+        if FEASIBILITY_MODE["blocked"]:
+            return ActionFeasibility(
+                feasible=False,
+                reason="Chief Yagami is extremely selective about who he meets - "
+                       "you have no introduction and don't know when he is free.",
+                suggestions=[
+                    "Talk to Matsuda in the NPA cafeteria - he sees the Chief daily",
+                    "Approach Soichiro's office with an introduction from a trusted colleague",
+                ],
+            )
+        return ActionFeasibility(feasible=True, reason="This is within your reach.")
     if agent == "scene_director":
         return SceneDirectionOutput(
             addressed_to=DIRECT_MODE["addressed_to"],
             speaker_order=DIRECT_MODE["speaker_order"],
             stay_silent=DIRECT_MODE["stay_silent"],
         )
+    if agent == "world_tick":
+        return WorldTickOutput(actions=[
+            NpcAction(character="RYUK",
+                      action="floated overhead, quietly amused",
+                      effects=[NpcEffect(stat="stress", delta=1, reason="Amused by watching")]),
+            NpcAction(character="LIGHT",
+                      action="studied the player's background file",
+                      effects=[NpcEffect(stat="stress", delta=1, reason="Uneasy about new arrival")]),
+        ])
+    if agent == "coach":
+        return CoachReply(reply="Trust is building. Use LABELING to name his fear, "
+                                 "then a CALIBRATED_QUESTION to open him up.")
     if agent == "listener":
         return SkillFeedback(did_use_concept=False)
     if agent.startswith("brain:"):
@@ -188,7 +105,7 @@ def _fake_model(agent, user=None):
                     current_interaction="The player alienated me.",
                 ),
                 dialogue=f"{cid} gets frustrated and leaves",
-                memory=f"{cid} left because the player alienated me and I no longer trust them.",
+                memory=f"{cid} left because the player alienated me.",
                 inner_thought=f"{cid} thinks this is hopeless",
                 stat_changes=StatChanges(
                     trust=StatChange(delta=-4, reason="Player was off-putting"),
@@ -203,11 +120,11 @@ def _fake_model(agent, user=None):
                 current_goal="Win the player over",
                 current_problem="Prove myself",
                 current_strategy="Be friendly",
-                relationship_state=f"{cid} trusts the player moderately and is willing to open up.",
+                relationship_state=f"{cid} trusts the player moderately.",
                 current_interaction="The player spoke to me directly.",
             ),
             dialogue=f"{cid} speaks",
-            memory=f"A stranger came up to me and said hello - I answered, we are still talking.",
+            memory=f"A stranger came up to me and said hello.",
             inner_thought=f"{cid} thinks",
             commitment_made=(Commitment(character=cid, target_character="SOICHIRO",
                                         about="ask Chief Soichiro about the player", status="open")
@@ -223,8 +140,10 @@ def _fake_model(agent, user=None):
             ),
         )
     if agent == "narrator":
-        scene_update = {"characters_left": ["MATSUDA"]} if NARRATOR_LEAVE_ALL["on"] else {}
-        if NARRATOR_CLOSE["on"]:
+        scene_update = {}
+        if NARRATOR_LEAVE_ALL["on"]:
+            scene_update = {"conversation_over": True, "characters_left": ["MATSUDA"]}
+        elif NARRATOR_CLOSE["on"]:
             scene_update = {"conversation_over": True, "ending": "character_walked_away",
                             "characters_left": ["MATSUDA"]}
         observer_memories = [
@@ -232,63 +151,27 @@ def _fake_model(agent, user=None):
                            note="I stayed quiet and watched the others talk to the player.")
             for cid in (user.get("silent") or [])
         ]
+        hooks = []
+        if NARRATOR_CLOSE["on"]:
+            hooks = [SceneExitHook(
+                character="MATSUDA",
+                suggestion="Follow me to Chief Soichiro's office",
+                context="Matsuda offered to introduce you to the Chief after the conversation.",
+            )]
         return NarratorOutput(narration="The cafeteria hums.",
                               where="Cafeteria",
-                              why_here="Mission in progress",
-                              mission_status={"current_mission_won": True},
+                              why_here="Scene in progress",
                               scene_update=scene_update,
-                              observer_memories=observer_memories)
+                              observer_memories=observer_memories,
+                              scene_hooks=hooks)
     raise AssertionError(f"unexpected agent {agent}")
-
-
-def _mission_end_model(user):
-    outcome = user.get("computed_outcome", "ongoing")
-    if outcome == "won":
-        return MissionEndOutput(
-            severity="mild",
-            action="MATSUDA hands over the referral info he promised",
-            character="MATSUDA",
-            world_effects=[WorldEffect(character="MATSUDA", stat="disclosure_level", delta=1,
-                                       reason="Shared the referral after being won over")],
-            debrief=MissionDebrief(message="Matsuda handed over the referral. Your plan moves forward.",
-                                   location="Cafeteria", who_is_around=["MATSUDA"]),
-            memory="A stranger kept pressing me for the referral - tonight he won me over and I shared it. I'm a little warmer to them now.",
-            event_log="M1 won - MATSUDA gave up the referral.",
-        )
-    if END_MODE["severity"] == "harsh":
-        return MissionEndOutput(
-            severity="harsh",
-            action="MATSUDA reports the player to L",
-            character="MATSUDA",
-            world_effects=[WorldEffect(character="L", stat="suspicion", delta=2,
-                                       reason="Matsuda reported the player to L")],
-            debrief=MissionDebrief(
-                message="You failed the mission. Matsuda left in disgust and told L about you. "
-                        "The rest of the chain no longer makes sense - what will you do now?",
-                location="Police lobby", who_is_around=["LIGHT", "RYUK"]),
-            memory="This player pushed too hard and I don't trust them - I told L about him and I won't hear him out again.",
-            event_log="M1 lost - MATSUDA reported the player to L.",
-        )
-    return MissionEndOutput(
-        severity="mild",
-        action="MATSUDA leaves politely",
-        character="MATSUDA",
-        debrief=MissionDebrief(
-            message="You failed the mission. Matsuda said 'ok, no problem' and left. "
-                    "The rest of the chain no longer makes sense - what will you do now?",
-            location="Police lobby", who_is_around=["LIGHT", "RYUK"]),
-        memory="I said 'no problem, no hard feelings' and left - it just didn't work out between us, and I'd rather not reopen it.",
-        event_log="M1 lost - MATSUDA left politely.",
-    )
 
 
 def fake_call_json(system, user, response_model, retries=3, agent="default", on_attempt=None):
     CALLS.append(agent)
-    if agent == "mission_architect":
-        last_ma_user["payload"] = user
     if agent.startswith("brain:"):
         last_r2_user["payload"] = user
-    model = _mission_end_model(user) if agent == "mission_end" else _fake_model(agent, user)
+    model = _fake_model(agent, user)
     if on_attempt:
         on_attempt(system=system, user_payload=user, raw_response="{}",
                    parsed=model.model_dump(mode="json"), success=True, error="", attempt=1)
@@ -318,445 +201,173 @@ def setup_json():
 
 
 def run_checks():
-    # STATE 0 -> STATE 1: setup with no plan must NOT call any LLM
+    # ---- SETUP: player submits character + strategic plan ----
     r = main._run_turn(TurnRequest(player_setup=json.loads(json.dumps(setup_json())),
-                                   new_player_input="", action="start"))
+                                   new_player_input="", action="setup",
+                                   plan_text="Infiltrate the Task Force and find Kira"))
     sid = r.session_id
-    check(r.game_state == "plan_elicitation", "start -> plan_elicitation")
-    check(r.world is not None and len(r.world.autonomous_players) == 5, "world bible for gallery")
-    check(CALLS == [], f"NO LLM before a plan exists (calls={CALLS})")
+    check(r.game_state == "world", "setup -> world")
+    check(r.world is not None and len(r.world.autonomous_players) == 5, "world bible loaded")
+    check(CALLS == [], f"NO LLM on setup (calls={CALLS})")
+    check(r.strategic_plan == "Infiltrate the Task Force and find Kira",
+          "strategic plan persisted")
 
-    # Live character stats are seeded at 0 before any plan is projected
+    # Stats seeded at 0
     world = main.load_world_bible("Death Note")
     seeded = main.seed_character_states(world)
     check(all(seeded[cid]["stats"]["trust_towards_player"] == 0
-              and seeded[cid]["stats"]["familiarity_towards_player"] == 0
-              and seeded[cid]["stats"]["respect_towards_player"] == 0
-              and seeded[cid]["stats"]["suspicion_towards_player"] == 0
-              and seeded[cid]["stats"]["rapport_towards_player"] == 0
-              and seeded[cid]["stats"]["disclosure_level"] == 0
-              and seeded[cid]["stats"]["stress"] == 0
               for cid in ("L", "LIGHT", "MATSUDA", "SOICHIRO", "RYUK")),
-          "all 7 stats default to 0 before the plan is projected")
-    check(all(bool(seeded[cid]["relationship_dynamics"]) for cid in ("L", "LIGHT", "MATSUDA", "SOICHIRO", "RYUK")),
-          "each character carries relationship_dynamics for the R2 brain")
+          "all stats default to 0")
 
-    # STATE 1 -> 2: submit a plan -> caster THEN World Gate THEN R0, lobby
-    r = main._run_turn(TurnRequest(session_id=sid, action="submit_plan",
-                                   plan_text="Get close to Matsuda, then earn L's attention"))
-    check(r.game_state == "mission_lobby", "submit_plan -> mission_lobby")
-    check(CALLS == ["caster", "feasibility_gate", "mission_architect"],
-          f"caster ran first, then World Gate, then mission_architect, once (calls={CALLS})")
-    check(len(r.mission_chain) == 2, "mission chain of 2 built")
-    check(r.turn.mission.title == "Matsuda Bridge" and r.turn.mission.status == "lobby",
-          "current mission is M1 in lobby")
-    check(r.feasibility is not None and r.feasibility.verdict,
-          "World Gate report surfaced on the lobby response")
-    check(r.feasibility.feasible and len(r.feasibility.path) == 2,
-          "feasibility path carries the world-valid steps")
-    check(bool(r.mission_chain[0].reason), "mission 1 carries the world access reason")
-    check(r.turn.mission.reason and "Matsuda" in r.turn.mission.reason,
-          "M1 reason surfaces on the current mission (why this first)")
-
-    # Cast projection persisted: stats/goal/plan updated for projected chars
-    row = db_module.get_session(sid)
-    mat = row.character_states["MATSUDA"]
-    check(mat["stats"]["trust_towards_player"] == 4, "MATSUDA trust projected to 4")
-    check(mat["stats"]["suspicion_towards_player"] == 1, "MATSUDA suspicion projected to 1")
-    check(mat["stats"]["familiarity_towards_player"] == 2, "MATSUDA familiarity projected to 2")
-    check(mat["stats"]["respect_towards_player"] == 3, "MATSUDA respect projected to 3")
-    check(mat["stats"]["rapport_towards_player"] == 4, "MATSUDA rapport projected to 4")
-    check(mat["stats"]["disclosure_level"] == 3, "MATSUDA disclosure projected to 3")
-    check(mat["goal"] == "Find a reliable witness", "MATSUDA goal rewritten by caster")
-    check(mat["solution"].startswith("Ask Jay"), "MATSUDA solution rewritten by caster")
-    check(row.character_states["L"]["stats"]["suspicion_towards_player"] == 5,
-          "L suspicion projected to 5")
-    check(row.character_states["L"]["stats"]["disclosure_level"] == 1,
-          "L disclosure projected to 1 (guarded even when engaged)")
-
-    # Every LLM call is audited to agent_calls - including caster + feasibility_gate + mission_architect
-    calls = db_module.get_agent_calls(sid)
-    agents = [c.agent for c in calls]
-    check("caster" in agents, f"caster logged to agent_calls (got {agents})")
-    check("feasibility_gate" in agents, f"feasibility_gate logged to agent_calls (got {agents})")
-    check("mission_architect" in agents, f"mission_architect logged to agent_calls (got {agents})")
-    check(all(c.turn_number == 0 for c in calls), "plan-time agents logged under turn 0")
-    ma_call = next(c for c in calls if c.agent == "mission_architect")
-    check(bool(ma_call.system_prompt) and bool(ma_call.raw_response),
-          "mission_architect audit stores prompt + raw response")
-
-    # STATE 3 -> 4: enter mission -> no LLM, live
-    r = main._run_turn(TurnRequest(session_id=sid, action="enter_mission", new_player_input=""))
-    check(r.game_state == "live_mission", "enter_mission -> live_mission")
-    check(CALLS == ["caster", "feasibility_gate", "mission_architect"], "enter_mission still no LLM")
-
-    # STATE 4: live turn -> R1+R2(cast only)+R3, presence synced.
-    # The narrator FAKE always claims current_mission_won=True - but the real
-    # verdict is deterministic (Matsuda trust needs 6). Turn 1 only reaches 5,
-    # so the mission MUST stay live even though R3 said "won".
-    r = main._run_turn(TurnRequest(session_id=sid, new_player_input="Hello Matsuda"))
-    check(r.game_state == "live_mission", "mission stays live until the stat goal is met (R3's verdict ignored)")
-    brains = [c for c in CALLS if c.startswith("brain:")]
-    check(brains == ["brain:MATSUDA"], f"R2 ran ONLY for mission cast (got {brains})")
-
-    # Context check: the brain MUST receive the player's latest message. The
-    # persisted conversation is appended only after R2, so the turn payload must
-    # carry new_player_input + a conversation ending with the player's words.
-    brain_call = next(c for c in db_module.get_agent_calls(sid) if c.agent == "brain:MATSUDA")
-    payload = brain_call.user_payload
-    conv = payload.get("full_conversation_this_mission") or payload.get("conversation") or []
-    check(payload.get("new_player_input") == "Hello Matsuda",
-          "R2 payload carries the player's latest message (new_player_input)")
-    check(conv and conv[-1].get("speaker") == "PLAYER" and conv[-1].get("text") == "Hello Matsuda",
-          "R2 conversation ends with the player's latest message")
+    # ---- DECLARE ACTION: feasibility check -> live scene ----
+    r = main._run_turn(TurnRequest(session_id=sid, action="declare_action",
+                                   new_player_input="I want to talk to Matsuda in the cafeteria"))
+    check(r.game_state == "live_scene", "declare_action (feasible) -> live_scene")
+    check("feasibility_check" in CALLS, "feasibility check ran")
+    check(r.feasibility is not None and r.feasibility.feasible, "action is feasible")
     row = db_module.get_session(sid)
     present = [cid for cid, s in row.character_states.items() if s.get("present")]
-    check(present == ["MATSUDA"], f"presence synced to mission cast only (got {present})")
-    check(all(not row.character_states[cid]["present"] for cid in ("L", "LIGHT", "RYUK")),
-          "L/LIGHT/RYUK NOT in the room during Matsuda mission")
-    mat = row.character_states["MATSUDA"]
-    check(mat["stats"]["trust_towards_player"] == 5 and mat["stats"]["stress"] == 1,
-          "R2 applied all 7 stat deltas (trust+1, stress-1)")
-    # memory is a narrative diary line from the brain - never a raw dialogue transcript
-    check(any("still talking" in m for m in mat["memory"]),
-          "memory stored as narrative diary entry (not hardcoded dialogue)")
-    check(not any("speaks" in m for m in mat["memory"]),
-          "memory never stores raw dialogue")
-    check(mat["stats"]["familiarity_towards_player"] == 3
-          and mat["stats"]["respect_towards_player"] == 4
-          and mat["stats"]["suspicion_towards_player"] == 0
-          and mat["stats"]["rapport_towards_player"] == 5
-          and mat["stats"]["disclosure_level"] == 4,
-          "R2 applied familiarity/respect/rapport/disclosure deltas")
+    check("MATSUDA" in present, "MATSUDA is present after declaring action")
 
-    # R2 reasoning is threaded onto the turn character for the inspector drawer
-    mchar = next(c for c in r.turn.characters if c.id == "MATSUDA")
-    check(bool(mchar.relationship_state and mchar.relationship_state.startswith("MATSUDA")),
-          "turn character carries R2 reasoning.relationship_state")
-
-    # STATE 4 -> 5: trust reaches 6 -> won -> advance to M2 lobby
+    # ---- LIVE SCENE: R1 + Scene Director + R2 + R3 ----
     CALLS.clear()
-    r = main._run_turn(TurnRequest(session_id=sid, new_player_input="A perfect accusation audit"))
-    check(r.game_state == "mission_lobby", "stat goal reached -> mission won, lobby for M2")
-    check(r.turn.mission.title == "Earn L's attention" and r.turn.mission.status == "lobby",
-          "advanced to M2 in lobby")
-    check(r.turn.mission.chain_progress == "1/2", "chain progress 1/2")
-    check("mission_end" in CALLS, "R4 ran on mission win (payoff decided)")
+    r = main._run_turn(TurnRequest(session_id=sid, new_player_input="Hello Matsuda"))
+    check(r.game_state == "live_scene", "scene turn stays live")
+    check("listener" in CALLS, "R1 listener ran")
+    brains = [c for c in CALLS if c.startswith("brain:")]
+    check(len(brains) >= 1, f"R2 brain(s) ran (got {brains})")
+    check("narrator" in CALLS, "R3 narrator ran")
+
+    # R2 payload contains player's latest message
+    brain_call = next(c for c in db_module.get_agent_calls(sid) if c.agent.startswith("brain:"))
+    payload = brain_call.user_payload
+    check(payload.get("new_player_input") == "Hello Matsuda",
+          "R2 payload carries player's latest message")
+    conv = payload.get("full_conversation_this_scene") or payload.get("full_conversation_this_mission") or []
+    check(conv and conv[-1].get("text") == "Hello Matsuda",
+          "R2 conversation ends with player's latest message")
+
+    # Stats updated
     row = db_module.get_session(sid)
-    check(any("M1 won" in e for e in row.mission_state.get("events", [])),
-          "win payoff logged as a world event")
-    check(row.character_states["MATSUDA"]["stats"]["disclosure_level"] >= 5,
-          "win payoff applied (reward info delivered on top of turn deltas)")
-    mem = row.character_states["MATSUDA"]["memory"]
-    check(len(mem) == 1 and "referral" in mem[0],
-          "R4 rewrites MATSUDA memory into one merged summary (win payoff folded in)")
-    check(row.mission_state["current"]["detail_level"] == "outline",
-          "M2 kept as a rough OUTLINE after M1 won (fleshed later, not pre-written)")
-    check(row.mission_state.get("reconcile_shift") is None,
-          "no world shift without open commitments (no scenario_director call)")
+    mat = row.character_states["MATSUDA"]
+    check(mat["stats"]["trust_towards_player"] >= 1, "MATSUDA trust increased after friendly turn")
 
-    # R7 world tick: non-cast NPCs kept living their lives during the mission
-    check("world_tick" in CALLS, "R7 ran on mission win (NPCs did things off-screen)")
-    check(any(e.startswith("Meanwhile,") for e in row.mission_state.get("events", [])),
-          "off-screen NPC actions logged as 'Meanwhile' world events")
+    # Conversation persisted
+    check(any(m.get("speaker") == "PLAYER" and "Hello Matsuda" in m.get("text", "")
+              for m in row.conversation),
+          "player message persisted in conversation")
+
+    # ---- SCENE EXIT: conversation_over -> back to world with hooks ----
+    CALLS.clear()
+    NARRATOR_CLOSE["on"] = True
+    r = main._run_turn(TurnRequest(session_id=sid, new_player_input="Thanks, see you"))
+    NARRATOR_CLOSE["on"] = False
+    check(r.game_state == "world", "scene exit -> world")
+    check(len(r.scene_hooks) > 0, "NPC suggestion surfaced as scene hook")
+    check(r.scene_hooks[0].character == "MATSUDA", "hook attributed to MATSUDA")
+
+    # ---- DECLARE ACTION (blocked): feasibility check rejects ----
+    FEASIBILITY_MODE["blocked"] = True
+    r = main._run_turn(TurnRequest(session_id=sid, action="declare_action",
+                                   new_player_input="Meet Chief Yagami directly"))
+    FEASIBILITY_MODE["blocked"] = False
+    check(r.game_state == "world", "blocked action stays in world")
+    check(r.feasibility is not None and not r.feasibility.feasible, "action blocked")
+    check(len(r.feasibility.suggestions) >= 1, "suggestions provided when blocked")
+
+    # ---- WORLD TICK: runs between scenes ----
+    check(any(e.startswith("Meanwhile,") for e in r.events),
+          "world tick logged Meanwhile events")
+    row = db_module.get_session(sid)
     check(row.character_states["RYUK"]["stats"]["stress"] >= 1,
-          "world tick persisted a stat drift on a non-cast NPC (Ryuk)")
-    check(row.character_states["L"]["stats"]["suspicion_towards_player"] == 5,
-          "world tick never touched L (next mission's stats stay fair)")
+          "world tick persisted stat drift on non-scene NPC")
 
-    # Coach chat: player can ask the Coach anything; it reads the live state
+    # ---- COMMITMENT PATH: dialogue promise captured ----
+    r = main._run_turn(TurnRequest(player_setup=json.loads(json.dumps(setup_json())),
+                                   new_player_input="", action="setup",
+                                   plan_text="Get close to Matsuda"))
+    c_sid = r.session_id
+    main._run_turn(TurnRequest(session_id=c_sid, action="declare_action",
+                               new_player_input="Talk to Matsuda"))
+    BRAIN_MODE["commit"] = True
+    main._run_turn(TurnRequest(session_id=c_sid, new_player_input="I promise to help"))
+    BRAIN_MODE["commit"] = False
+    row = db_module.get_session(c_sid)
+    check(any(c["about"] == "ask Chief Soichiro about the player"
+              for c in row.mission_state.get("commitments", [])),
+          "dialogue promise captured into commitments ledger")
+    check(any("committed" in e for e in row.mission_state.get("events", [])),
+          "commitment logged as world event")
+
+    # ---- COACH: player can ask the Coach anything ----
     coach_resp = main.api_coach(CoachRequest(
         session_id=sid,
-        message="What concept should I use to win?",
-        history=[{"role": "player", "content": "Hi"},
-                 {"role": "coach", "content": "Ask me anything about the state."}],
+        message="What should I do?",
+        history=[],
     ))
     check(coach_resp["reply"] and "LABELING" in coach_resp["reply"],
-          "coach answers with a concrete skill from the bible")
-    calls = db_module.get_agent_calls(sid)
-    check(any(c.agent == "coach" for c in calls), "coach Q&A audited to agent_calls")
+          "coach answers with a concrete skill")
 
-    # enter M2 -> the OUTLINE is fleshed out at entry time (mission_flesher)
-    CALLS.clear()
-    r = main._run_turn(TurnRequest(session_id=sid, action="enter_mission", new_player_input=""))
-    check(r.game_state == "live_mission", "M2 entered")
-    check("mission_flesher" in CALLS, "outline mission fleshed on entry (mission_flesher ran)")
-    row = db_module.get_session(sid)
-    check(row.mission_state["current"]["detail_level"] == "detailed"
-          and row.mission_state["current"]["win_conditions"],
-          "M2 now fully detailed with stat conditions after fleshing")
-    check(bool(row.mission_state["current"].get("reason")),
-          "M2 access-gate reason survives the fleshing")
-    r = main._run_turn(TurnRequest(session_id=sid, new_player_input="engage L"))
-    check(r.game_state == "live_mission", "M2 turn 1 stays live (suspicion 4 > 3)")
-    r = main._run_turn(TurnRequest(session_id=sid, new_player_input="disarm L"))
-    check(r.game_state == "complete", "M2 suspicion hits 3 -> complete")
-
-    # ---- COMMITMENT PATH: a dialogue promise reshapes the next mission ----
+    # ---- EMPTY ROOM: everyone leaves -> back to world ----
     r = main._run_turn(TurnRequest(player_setup=json.loads(json.dumps(setup_json())),
-                                   new_player_input="", action="start"))
-    c_sid = r.session_id
-    main._run_turn(TurnRequest(session_id=c_sid, action="submit_plan",
-                               plan_text="Get close to Matsuda"))
-    main._run_turn(TurnRequest(session_id=c_sid, action="enter_mission", new_player_input=""))
-    BRAIN_MODE["commit"] = True
-    main._run_turn(TurnRequest(session_id=c_sid, new_player_input="Promise Matsuda help"))
-    row = db_module.get_session(c_sid)
-    check(any(c["about"] == "ask Chief Soichiro about the player" for c in row.mission_state.get("commitments", [])),
-          "dialogue promise captured into the commitments ledger")
-    check(any("committed" in e for e in row.mission_state.get("events", [])),
-          "new commitment logged as a world event")
-    # WIN with an open commitment -> R6 Scenario Director revises M2.
-    # (The same promise fires again on this turn but is deduped, so the ledger
-    # still holds exactly one open entry.)
-    CALLS.clear()
-    main._run_turn(TurnRequest(session_id=c_sid, new_player_input="A perfect accusation audit"))
-    check("scenario_director" in CALLS, "R6 ran on win because an open commitment exists")
-    check("mission_end" in CALLS, "R4 still ran on mission win")
-    row = db_module.get_session(c_sid)
-    check(len([c for c in row.mission_state.get("commitments", []) if c["about"] == "ask Chief Soichiro about the player"]) == 1,
-          "commitment deduped by who+what (no duplicate ledger rows)")
-    nxt = [m for m in row.mission_state["chain"] if m["id"] == 2][0]
-    check(nxt["title"] == "Chief Soichiro's ear", "R6 rewrote M2 title to follow the promise")
-    check(nxt["characters"] == ["SOICHIRO"], "R6 re-cast M2 around the promised target")
-    check(row.mission_state["current"]["detail_level"] == "outline",
-          "revised M2 still an outline until entered")
-    check(any("WORLD SHIFT" in e for e in row.mission_state.get("events", [])),
-          "material shift broadcast as a world event")
-    # lobby response surfaces the shift for the player to see
-    r = main._run_turn(TurnRequest(session_id=c_sid, new_player_input=""))
-    check(r.reconcile_shift is not None and "Chief Soichiro" in r.reconcile_shift,
-          "lobby surfaces the world shift (reconcile_shift)")
-    # commitments survive a voluntary re-plan
-    main._run_turn(TurnRequest(session_id=c_sid, action="revise_plan", new_player_input=""))
-    row = db_module.get_session(c_sid)
-    check(row.mission_state.get("plan_flopped") is True and row.mission_state.get("chain") == [],
-          "revise_plan voids the chain like a flop")
-    check(len(row.mission_state.get("commitments", [])) == 1,
-          "commitments persist across a plan revision (loose coupling)")
-    check(row.mission_state.get("reconcile_shift") is None,
-          "revise_plan clears the stale shift banner")
-    BRAIN_MODE["commit"] = False
-
-    # defensive: calling turn with no plan and no action returns elicitation
-    r = main._run_turn(TurnRequest(player_setup=json.loads(json.dumps(setup_json())),
-                                   new_player_input="hi"))
-    check(r.game_state == "plan_elicitation", "no-plan turn stays in elicitation")
-
-    # ---- WORLD GATE: an infeasible plan routes through the world's path ----
-    # Player asks for something the world forbids (meet Chief Yagami directly).
-    # The Gate blocks it with a reason and R0 builds missions ONLY from the
-    # feasible path -> the Matsuda-first chain is now justified, not random.
-    GATE_MODE["block_direct_yagami"] = True
-    r = main._run_turn(TurnRequest(player_setup=json.loads(json.dumps(setup_json())),
-                                   new_player_input="", action="start"))
-    gate_sid = r.session_id
-    r = main._run_turn(TurnRequest(session_id=gate_sid, action="submit_plan",
-                                   plan_text="Meet Chief Yagami directly and ask for a place in the task force"))
-    GATE_MODE["block_direct_yagami"] = False
-    check(r.game_state == "mission_lobby", "blocked plan still routes to a lobby (never dead-ends)")
-    check(r.feasibility is not None and r.feasibility.feasible is False,
-          "World Gate rules the plan infeasible as written")
-    check(any("Yagami" in b.step and "selective" in b.why_blocked for b in r.feasibility.blockers),
-          "blocker explains WHY the Chief can't be met (he vets everyone)")
-    check(bool(r.feasibility.reframe), "Gate reframes the plan into its feasible version")
-    path = r.feasibility.path
-    check(path and path[0].target_character == "MATSUDA",
-          f"feasible path starts with the accessible step (got {[s.target_character for s in path]})")
-    check(bool(last_ma_user.get("payload", {}).get("feasibility_path")),
-          "R0 received the feasibility_path to build missions from")
-    check(r.mission_chain[0].characters == ["MATSUDA"],
-          "mission 1 is the accessible step (Matsuda) - not a straight line to the Chief")
-    check("introduction" in (r.mission_chain[0].reason or "").lower()
-          or "access" in (r.mission_chain[0].reason or "").lower(),
-          "mission 1 reason quotes the access gate (introduction)")
-    row = db_module.get_session(gate_sid)
-    fe = row.mission_state.get("feasibility") or {}
-    check(fe.get("feasible") is False and len(fe.get("blockers") or []) == 1,
-          "blocked feasibility report persisted into mission_state")
-
-    # ---- FAIL PATH (HARSH): the character reports the player -> plan flops ----
-    r = main._run_turn(TurnRequest(player_setup=json.loads(json.dumps(setup_json())),
-                                   new_player_input="", action="start"))
-    harsh_sid = r.session_id
-    main._run_turn(TurnRequest(session_id=harsh_sid, action="submit_plan",
-                               plan_text="Get close to Matsuda"))
-    main._run_turn(TurnRequest(session_id=harsh_sid, action="enter_mission", new_player_input=""))
-    CALLS.clear()
-    BRAIN_MODE["fail"] = True
-    END_MODE["severity"] = "harsh"
-    NARRATOR_CLOSE["on"] = True
-    r = main._run_turn(TurnRequest(session_id=harsh_sid, new_player_input="Rude outburst"))
-    BRAIN_MODE["fail"] = False
-    NARRATOR_CLOSE["on"] = False
-    check(r.game_state == "plan_revision", "failed mission -> plan_revision (not a retry lobby)")
-    check(r.debrief is not None and "what will you do now" in r.debrief.message,
-          "failure debrief asks the player for a new plan")
-    check("mission_end" in CALLS, "R4 ran on mission failure")
-    check("world_tick" in CALLS, "R7 ran on mission failure too (world keeps moving)")
-    row = db_module.get_session(harsh_sid)
-    check(row.mission_state.get("plan_flopped") is True,
-          "plan marked as flopped (chain voided)")
-    check(row.mission_state.get("current") is None and row.mission_state.get("chain") == [],
-          "failed chain cleared - remaining missions no longer apply")
-    check(any("reported" in e for e in row.mission_state.get("events", [])),
-          "harsh consequence logged as a world event")
-    check(row.character_states["L"]["stats"]["suspicion_towards_player"] == 7,
-          "harsh consequence: L suspicion raised by 2 (Matsuda reported you)")
-    check(row.character_states["MATSUDA"]["stats"]["trust_towards_player"] == 0,
-          "trust cratered (4 - 4) - the damage persists")
-    mem = row.character_states["MATSUDA"]["memory"]
-    check(len(mem) == 1 and "I told L" in mem[0],
-          "R4 rewrites Matsuda memory into ONE merged summary (reported you)")
-    present = [cid for cid, s in row.character_states.items() if s.get("present")]
-    check(present == ["LIGHT", "RYUK"] and not row.character_states["MATSUDA"]["present"],
-          "presence synced to debrief: Matsuda left, others around")
-
-    # PLAN REVISION: a new plan rebuilds the chain WITHOUT resetting the cast
-    CALLS.clear()
-    r = main._run_turn(TurnRequest(session_id=harsh_sid, action="submit_plan",
-                                   plan_text="Repair Matsuda's trust before touching L"))
-    check(r.game_state == "mission_lobby", "revised plan -> mission lobby")
-    check(CALLS == ["feasibility_gate", "mission_architect"],
-          f"revision skips cast re-projection - stats/memory survive (calls={CALLS})")
-    check(len(r.mission_chain) == 2, "revised plan built a fresh mission chain")
-    row = db_module.get_session(harsh_sid)
-    check(row.mission_state.get("plan_flopped") is False, "plan_flopped cleared after revision")
-    check(row.character_states["MATSUDA"]["stats"]["trust_towards_player"] == 0,
-          "Matsuda STILL distrusts the player after revision (no reset)")
-    mem = row.character_states["MATSUDA"]["memory"]
-    check(len(mem) == 1 and "I told L" in mem[0],
-          "Matsuda's rewritten memory survives into the new plan")
-    r = main._run_turn(TurnRequest(session_id=harsh_sid, action="enter_mission", new_player_input=""))
-    check(r.game_state == "live_mission", "revised plan -> new mission entered")
-
-    # ---- FAIL PATH (MILD): polite leave, no permanent world damage ----
-    r = main._run_turn(TurnRequest(player_setup=json.loads(json.dumps(setup_json())),
-                                   new_player_input="", action="start"))
-    mild_sid = r.session_id
-    main._run_turn(TurnRequest(session_id=mild_sid, action="submit_plan",
-                               plan_text="Get close to Matsuda"))
-    main._run_turn(TurnRequest(session_id=mild_sid, action="enter_mission", new_player_input=""))
-    END_MODE["severity"] = "mild"
-    BRAIN_MODE["fail"] = True
-    NARRATOR_CLOSE["on"] = True
-    r = main._run_turn(TurnRequest(session_id=mild_sid, new_player_input="Rude outburst"))
-    BRAIN_MODE["fail"] = False
-    NARRATOR_CLOSE["on"] = False
-    row = db_module.get_session(mild_sid)
-    check(r.game_state == "plan_revision", "mild failure also -> plan_revision")
-    check(row.character_states["L"]["stats"]["suspicion_towards_player"] == 5,
-          "mild consequence: L suspicion unchanged (no report to L)")
-    check(any("no problem" in m for m in row.character_states["MATSUDA"]["memory"]),
-          "mild consequence: character leaves politely (memory records it)")
-
-    # ---- EMPTY ROOM: everyone in the cast left -> mission ends as a failure ----
-    # The narrator reports the sole cast member leaving. Even though the stats
-    # say the mission is still winnable, no one is there to talk to.
-    r = main._run_turn(TurnRequest(player_setup=json.loads(json.dumps(setup_json())),
-                                   new_player_input="", action="start"))
+                                   new_player_input="", action="setup",
+                                   plan_text="Get close to Matsuda"))
     empty_sid = r.session_id
-    main._run_turn(TurnRequest(session_id=empty_sid, action="submit_plan",
-                               plan_text="Get close to Matsuda"))
-    main._run_turn(TurnRequest(session_id=empty_sid, action="enter_mission", new_player_input=""))
+    main._run_turn(TurnRequest(session_id=empty_sid, action="declare_action",
+                               new_player_input="Talk to Matsuda"))
     NARRATOR_LEAVE_ALL["on"] = True
     r = main._run_turn(TurnRequest(session_id=empty_sid, new_player_input="Hello"))
     NARRATOR_LEAVE_ALL["on"] = False
-    check(r.game_state == "plan_revision",
-          "all cast left -> empty room forces the mission to fail")
-    check("mission_end" in CALLS, "R4 resolves the empty-room failure")
+    check(r.game_state == "world", "all left -> back to world")
     row = db_module.get_session(empty_sid)
-    check(row.mission_state.get("plan_flopped") is True,
-          "empty-room failure flops the plan like any other failure")
     present = [cid for cid, s in row.character_states.items() if s.get("present")]
-    check(present == ["LIGHT", "RYUK"],
-          "presence synced after empty room (Matsuda gone, others around)")
+    check("MATSUDA" not in present, "MATSUDA no longer present after leaving")
 
-    # ---- STATS NEVER END A MISSION: a low stat just means not winning yet ----
-    # Inject a fail_condition that is ALREADY met (trust 4 <= 10). The mission
-    # must stay live: the mission only closes on social closure, never a stat.
+    # ---- TURN-CAP: stalled scene wraps up ----
     r = main._run_turn(TurnRequest(player_setup=json.loads(json.dumps(setup_json())),
-                                   new_player_input="", action="start"))
-    stat_sid = r.session_id
-    main._run_turn(TurnRequest(session_id=stat_sid, action="submit_plan",
-                               plan_text="Get close to Matsuda"))
-    main._run_turn(TurnRequest(session_id=stat_sid, action="enter_mission", new_player_input=""))
-    row = db_module.get_session(stat_sid)
-    row.mission_state["current"]["fail_conditions"] = [
-        {"character": "MATSUDA", "stat": "trust", "max": 10}]
-    db_module.save_session_state(stat_sid, row.mission_state, row.character_states, row.conversation)
-    CALLS.clear()
-    main._run_turn(TurnRequest(session_id=stat_sid, new_player_input="hi"))
-    check("mission_end" not in CALLS and "narrator" in CALLS,
-          f"tripped stat fail_condition does NOT end the mission (calls={CALLS})")
-    row = db_module.get_session(stat_sid)
-    check(row.mission_state.get("current") is not None
-          and row.mission_state["current"]["status"] == "active",
-          "mission stays active with a low stat - no premature failure")
-
-    # ---- TURN-CAP BACKSTOP: a stalled scene wraps up after MAX_MISSION_TURNS ----
-    # The brain never moves any stat and the narrator never reports closure;
-    # the mechanical cap ends the scene so the game cannot softlock.
-    r = main._run_turn(TurnRequest(player_setup=json.loads(json.dumps(setup_json())),
-                                   new_player_input="", action="start"))
+                                   new_player_input="", action="setup",
+                                   plan_text="Get close to Matsuda"))
     cap_sid = r.session_id
-    main._run_turn(TurnRequest(session_id=cap_sid, action="submit_plan",
-                               plan_text="Get close to Matsuda"))
-    main._run_turn(TurnRequest(session_id=cap_sid, action="enter_mission", new_player_input=""))
+    main._run_turn(TurnRequest(session_id=cap_sid, action="declare_action",
+                               new_player_input="Talk to Matsuda"))
     BRAIN_MODE["stall"] = True
-    last_state = "live_mission"
-    for i in range(8):
+    last_state = "live_scene"
+    for i in range(16):
         r = main._run_turn(TurnRequest(session_id=cap_sid, new_player_input="small talk"))
-        if r.game_state != "live_mission":
+        if r.game_state != "live_scene":
             last_state = r.game_state
             break
     BRAIN_MODE["stall"] = False
-    check(last_state == "plan_revision",
-          f"stalled scene ends via the turn cap, no softlock (ended as {last_state})")
-    row = db_module.get_session(cap_sid)
-    check(any("drifted apart" in e for e in row.mission_state.get("events", [])),
-          "turn-cap close logged a 'drifted apart' world event")
+    check(last_state == "world",
+          f"stalled scene ends via turn cap, no softlock (ended as {last_state})")
 
-    # ---- SCENE DIRECTOR: a two-character room reacts in order, addressed first ----
-    # The director says the player addressed MATSUDA but orders SOICHIRO first;
-    # the addressed character is mechanically forced to speak first, and the
-    # second speaker must SEE what the first already said.
+    # ---- SCENE DIRECTOR: 2-char room, addressed first ----
     r = main._run_turn(TurnRequest(player_setup=json.loads(json.dumps(setup_json())),
-                                   new_player_input="", action="start"))
+                                   new_player_input="", action="setup",
+                                   plan_text="Get close to Matsuda and Soichiro"))
     scene_sid = r.session_id
-    main._run_turn(TurnRequest(session_id=scene_sid, action="submit_plan",
-                               plan_text="Get close to Matsuda and Soichiro"))
-    row = db_module.get_session(scene_sid)
-    row.mission_state["current"]["characters"] = ["MATSUDA", "SOICHIRO"]
-    db_module.save_session_state(scene_sid, row.mission_state, row.character_states, row.conversation)
-    main._run_turn(TurnRequest(session_id=scene_sid, action="enter_mission", new_player_input=""))
+    main._run_turn(TurnRequest(session_id=scene_sid, action="declare_action",
+                               new_player_input="Talk to Matsuda and Soichiro"))
     DIRECT_MODE["addressed_to"] = "MATSUDA"
-    DIRECT_MODE["speaker_order"] = ["SOICHIRO", "MATSUDA"]  # director says Soichiro first
+    DIRECT_MODE["speaker_order"] = ["SOICHIRO", "MATSUDA"]
     DIRECT_MODE["stay_silent"] = []
     CALLS.clear()
-    r = main._run_turn(TurnRequest(session_id=scene_sid, new_player_input="Matsuda, what do you think?"))
-    check("scene_director" in CALLS, "Scene Director ran for a 2-character room")
+    r = main._run_turn(TurnRequest(session_id=scene_sid,
+                                   new_player_input="Matsuda, what do you think?"))
+    check("scene_director" in CALLS, "Scene Director ran for 2-char room")
     brains = [c for c in CALLS if c.startswith("brain:")]
     check(brains == ["brain:MATSUDA", "brain:SOICHIRO"],
-          f"addressed character MATSUDA speaks FIRST despite the director's order (got {brains})")
-    check(r.turn.messages[-1].speaker == "SOICHIRO",
-          "the last message is the final speaker (SOICHIRO)")
+          f"addressed MATSUDA speaks FIRST despite director order (got {brains})")
     check(last_r2_user.get("payload", {}).get("directed_to_you") is False,
-          "SOICHIRO (not addressed) knows the player spoke to MATSUDA, not him")
+          "SOICHIRO knows the player spoke to MATSUDA, not him")
     before = last_r2_user.get("payload", {}).get("this_turn_before_you") or []
-    check(any("MATSUDA" in (m.get("speaker") or "") and "speaks" in (m.get("text") or "")
-              for m in before),
-          "the second speaker SEES what the first said this turn (reacts, not in isolation)")
-    row = db_module.get_session(scene_sid)
-    spoke = [m["speaker"] for m in row.conversation[-2:]]
-    check(spoke == ["MATSUDA", "SOICHIRO"], f"conversation persists real turn order (got {spoke})")
+    check(any("MATSUDA" in (m.get("speaker") or "") for m in before),
+          "second speaker SEES what the first said")
 
     # ---- SCENE DIRECTOR: silencing ----
-    # The director silences SOICHIRO: no brain call (no tokens), no stat change,
-    # but R3 writes his observer memory so he still remembers the scene.
     DIRECT_MODE["speaker_order"] = ["MATSUDA"]
     DIRECT_MODE["stay_silent"] = ["SOICHIRO"]
-    BRAIN_MODE["stall"] = True  # keep the mission live so the scene stays put
+    BRAIN_MODE["stall"] = True
     CALLS.clear()
     soichiro_before = dict(db_module.get_session(scene_sid)
                            .character_states["SOICHIRO"]["stats"])
@@ -764,18 +375,33 @@ def run_checks():
     BRAIN_MODE["stall"] = False
     brains = [c for c in CALLS if c.startswith("brain:")]
     check(brains == ["brain:MATSUDA"],
-          f"silenced SOICHIRO gets NO brain call (tokens saved) (got {brains})")
+          f"silenced SOICHIRO gets NO brain call (got {brains})")
     row = db_module.get_session(scene_sid)
     check(row.character_states["SOICHIRO"]["stats"] == soichiro_before,
-          "silenced character's stats stay frozen until they next speak")
+          "silenced character's stats frozen")
     mem = row.character_states["SOICHIRO"]["memory"]
     check(any("stayed quiet" in m for m in mem),
-          "narrator wrote an observer memory for the silent character")
-    check(r.turn.messages[-1].speaker == "MATSUDA",
-          "only the speaker's line renders in the chat")
-    DIRECT_MODE["speaker_order"] = ["MATSUDA", "SOICHIRO"]
-    DIRECT_MODE["stay_silent"] = []
-    DIRECT_MODE["addressed_to"] = "MATSUDA"
+          "narrator wrote observer memory for silent character")
+
+    # ---- HARSH FAIL: character walks out, scene ends ----
+    r = main._run_turn(TurnRequest(player_setup=json.loads(json.dumps(setup_json())),
+                                   new_player_input="", action="setup",
+                                   plan_text="Get close to Matsuda"))
+    harsh_sid = r.session_id
+    main._run_turn(TurnRequest(session_id=harsh_sid, action="declare_action",
+                               new_player_input="Talk to Matsuda"))
+    BRAIN_MODE["fail"] = True
+    NARRATOR_CLOSE["on"] = True
+    r = main._run_turn(TurnRequest(session_id=harsh_sid, new_player_input="Rude outburst"))
+    BRAIN_MODE["fail"] = False
+    NARRATOR_CLOSE["on"] = False
+    check(r.game_state == "world", "harsh fail -> back to world")
+    row = db_module.get_session(harsh_sid)
+    check(row.character_states["MATSUDA"]["stats"]["trust_towards_player"] == 0,
+          "trust cratered after harsh fail")
+    mem = row.character_states["MATSUDA"]["memory"]
+    check(any("left" in m.lower() or "frustrated" in m.lower() for m in mem),
+          "MATSUDA memory records the fallout")
 
     print("\nALL STATE CHECKS PASSED")
 

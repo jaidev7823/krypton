@@ -189,6 +189,63 @@ def build_cast_prompt(
 
 
 # ---------------------------------------------------------------------------
+# Feasibility Check (runs per action declaration)
+# ---------------------------------------------------------------------------
+
+def build_feasibility_check_prompt(
+    player: PlayerSetup,
+    world: WorldBible,
+    character_states: dict[str, Any],
+    action_text: str,
+    events: list[str],
+) -> tuple[str, dict]:
+    system = (
+        "You are the Impossibility Checker for a living world simulation.\n"
+        "Your only job: can the player realistically do this action RIGHT NOW?\n"
+        "Check three things:\n"
+        "1. Physical Proximity: Can the player reach the location?\n"
+        "2. Social Clearance: Will the target talk to the player without an escort/badge?\n"
+        "3. Information State: Does the player actually know where the target is?\n"
+        "Rules:\n"
+        "- If ANY check fails, set feasible=false and explain why.\n"
+        "- When blocked, suggest 1-3 nearby valid actions the player CAN do.\n"
+        "- Suggestions should be grounded in the world bible's access metadata.\n"
+        "- If all checks pass, set feasible=true with a brief reason.\n"
+        "- Be realistic. A student cannot walk into a police HQ uninvited.\n"
+        "- Output ONLY JSON matching the schema exactly."
+    )
+    access_metadata = []
+    for char in world.autonomous_players:
+        access_metadata.append({
+            "id": char.id,
+            "name": char.canon_name,
+            "meetability": char.access.meetability,
+            "gate": char.access.gate,
+            "where": char.access.where,
+            "grants": char.access.grants,
+        })
+    user = {
+        "task": "Check if this action is feasible right now.",
+        "player_action": action_text,
+        "player_profile": {
+            "name": player.character_name,
+            "background": player.background,
+            "starting_position": player.starting_position,
+        },
+        "world_name": world.world.name,
+        "world_rules": world.world.rules,
+        "character_access": access_metadata,
+        "recent_events": events[-5:] if events else [],
+        "output_schema": {
+            "feasible": "bool - true if the action is physically and socially possible",
+            "reason": "str - why blocked (if false) or why it works (if true)",
+            "suggestions": ["str - 1-3 alternative actions the player CAN do right now (only if feasible=false)"],
+        },
+    }
+    return system, user
+
+
+# ---------------------------------------------------------------------------
 # R0: Mission Architect (runs once per player plan)
 # ---------------------------------------------------------------------------
 
@@ -623,27 +680,11 @@ def build_coach_prompt(
     question: str,
     history: list[dict[str, str]],
 ) -> tuple[str, dict]:
-    """The Coach - a meta mentor the player can ask anything about the game.
-
-    Unlike the in-world characters, the Coach knows EVERYTHING (win conditions,
-    live stats, the whole plan) and uses the skill bible to tell the player
-    exactly what to do and what they are doing wrong.
-    """
+    """The Coach - a meta mentor the player can ask anything about the game."""
     skills = [
         f"{s.id}: {s.name or s.id} - {s.definition or ''}"
         for s in skill_bible.skills
     ]
-    current = mission_state.get("current") or {}
-    remaining = mission_state.get("chain") or []
-    chain_readout = []
-    for i, m in enumerate(remaining, start=1):
-        marker = "CURRENT" if m.get("id") == current.get("id") else "next"
-        chain_readout.append(
-            f"  [{marker}] M{i} '{m.get('title', '')}' objective='{m.get('objective', '')}' "
-            f"win_conditions={m.get('win_conditions') or []} "
-            f"fail_conditions={m.get('fail_conditions') or []} "
-            f"cast={m.get('characters') or []} status={m.get('status', '')}"
-        )
     stats_readout = []
     for cid, s in character_states.items():
         vals = ", ".join(f"{k.split('_')[0]}={v}" for k, v in (s.get("stats") or {}).items())
@@ -660,9 +701,6 @@ def build_coach_prompt(
         "Rules:\n"
         "- Ground every answer in the LIVE STATE below. The stats are ground truth: if trust is low, "
         "say why the stat is low and exactly what the player should say next to move it.\n"
-        "- You may see win_conditions/fail_conditions. Use them honestly: tell the player the target "
-        "and how close they are, but coach them to win through SKILL (technique), not by just "
-        "repeating the number.\n"
         "- Reference specific skills from the skill bible by their ID (e.g. LABELING, CALIBRATED_QUESTION). "
         "Point out when the player is missing an obvious skill for the situation.\n"
         "- Diagnose mistakes against real evidence: the recent dialogue + the live stats. "
@@ -676,10 +714,9 @@ def build_coach_prompt(
         "player_question": question,
         "prior_coach_chat": history_txt,
         "player": player.model_dump(mode="json"),
-        "player_own_plan": player.own_plan,
+        "strategic_plan": mission_state.get("strategic_plan", ""),
         "world_lore": world.model_dump(mode="json"),
         "skill_bible": skills,
-        "mission_chain": "\n".join(chain_readout) or "(no missions yet)",
         "live_stats": "\n".join(stats_readout) or "(no characters)",
         "world_events": mission_state.get("events") or [],
         "open_commitments": [c for c in (mission_state.get("commitments") or []) if c.get("status") == "open"],
@@ -878,6 +915,24 @@ def build_r2_prompt(
             {"speaker": m.get("speaker", ""), "text": m.get("text", "")}
             for m in this_turn_before_you
         ]
+
+    # Willingness injection: when trust reaches a threshold from stat_ladders,
+    # tell the character they are now open to helping the player with their goal.
+    stat_ladders = character.get("stat_ladders") or {}
+    trust = stats.get("trust_towards_player", 0)
+    trust_ladder = stat_ladders.get("trust", [])
+    willingness_threshold = None
+    for band in trust_ladder:
+        if trust >= band.get("max", 0):
+            willingness_threshold = band.get("behavior", "")
+    if willingness_threshold and trust >= 4:
+        user["willingness_directive"] = (
+            f"Your trust level is {trust}/10. {willingness_threshold}. "
+            "If the player asks for help with their goal or asks to be introduced to someone, "
+            "you are now open to considering it. You do NOT offer help unprompted - but if asked, "
+            "you may say yes, suggest conditions, or explain what you can do."
+        )
+
     return system, user
 
 
@@ -888,7 +943,7 @@ def build_r2_prompt(
 def build_r3_prompt(
     world: WorldBible,
     player: PlayerSetup,
-    mission_context: dict[str, Any],
+    scene_context: dict[str, Any],
     r1_output: dict[str, Any],
     r2_outputs: list[dict[str, Any]],
     conversation: list[dict[str, str]],
@@ -900,59 +955,55 @@ def build_r3_prompt(
         "Rules:\n"
         "- You are NOT a character. You describe the environment like a narrator.\n"
         "- Explain where the player is, why they are here, and context they don't have.\n"
-        "- The mission's WIN is decided mechanically by the Mission Manager from the stat "
-        "thresholds - see computed_mission_outcome in your payload. NEVER change that verdict.\n"
-        "- A mission is NEVER over just because a stat is low or progress is slow. "
-        "It only ends when the conversation itself is over. Set scene_update.conversation_over=true "
+        "- The scene ends ONLY when the conversation itself is over. Set scene_update.conversation_over=true "
         "ONLY when the scene genuinely cannot continue, such as:\n"
         "  * everyone in the room left or walked away,\n"
         "  * a character kicked the player out / refused to keep talking / said goodbye and left,\n"
-        "  * the scene has dragged on with no win and no real progress (turns_in_mission is high) "
+        "  * the scene has dragged on with no progress (turns_in_scene is high) "
         "and the characters naturally disengage and wrap up.\n"
-        "- When conversation_over=true, narrate the scene closing (character leaving, walking away, "
-        "or politely ending the conversation) and set scene_update.characters_left for whoever departs.\n"
-        "- If computed_mission_outcome is 'won', narrate the objective being achieved. If 'ongoing', narrate the scene only.\n"
-        "- Set current_mission_won true ONLY if computed_mission_outcome is 'won'.\n"
-        "- You do NOT create missions or invent new story arcs. The mission chain is already fixed.\n"
-        "- Report chain_progress exactly as given in mission_context.\n"
-        "- The current scene and its characters are defined by the active mission. Do not add characters who are not in the mission.\n"
+        "- When conversation_over=true, narrate the scene closing and set scene_update.characters_left.\n"
+        "- You do NOT create new story arcs or decide mission outcomes.\n"
+        "- The current scene and its characters are defined by the player's action. Do not add characters who are not present.\n"
         "- The Scene Director already set who spoke this turn (speakers) and who stayed quiet (silent). "
-        "Narrate the scene naturally around that: whoever stayed silent does NOT speak; you may note in the "
-        "narration that they watched quietly.\n"
+        "Narrate the scene naturally around that.\n"
         "- observer_memories: for EVERY character in the 'silent' list, write ONE compact first-person note "
-        "recording what they observed this turn (who spoke, what was said, how they read it). This note is "
-        "appended to their memory so they remember without having spoken. Use their character id and voice.\n"
+        "recording what they observed this turn. This note is appended to their memory.\n"
+        "- scene_hooks: if any character offered a concrete next step (e.g. 'follow me to X', 'I can introduce you to Y'), "
+        "capture it here. These become clickable suggestions for the player's next action.\n"
         "- Output ONLY JSON matching the schema exactly."
     )
     user = {
-        "task": "Narrate this turn; report only social closure (never stats) as ending the scene.",
+        "task": "Narrate this turn. The scene ends only on social closure, never on stats.",
         "world_lore": world.model_dump(mode="json"),
         "player": player.model_dump(mode="json"),
-        "mission_context": mission_context,
+        "scene_context": scene_context,
         "request_1_output": r1_output,
         "request_2_outputs": r2_outputs,
-        "full_conversation_this_mission": conversation,
+        "full_conversation_this_scene": conversation,
         "speakers": speakers or [],
         "silent": silent or [],
         "output_schema": {
             "narration": "str - environment description",
             "where": "str - location",
             "why_here": "str - why the player is here",
-            "mission_status": {
-                "current_mission_won": "bool - true only if the mission's objective is met",
-                "chain_progress": "str like '1/5'"
-            },
             "scene_update": {
                 "characters_entered": ["ids"],
                 "characters_left": ["ids who departed this turn"],
                 "new_characters_present_for_next_turn": ["ids"],
-                "conversation_over": "bool - true ONLY when the conversation itself is over (kicked out, everyone left, character walked away, or a long-stalled scene wraps up). NEVER true just because progress is slow.",
-                "ending": "str - why it ended, e.g. 'everyone_left' | 'kicked_out' | 'character_walked_away' | 'went_nowhere'. Empty when conversation_over is false."
+                "conversation_over": "bool - true ONLY when the conversation itself is over",
+                "ending": "str - why it ended, e.g. 'everyone_left' | 'kicked_out' | 'character_walked_away'. Empty when conversation_over is false."
             },
             "observer_memories": [
                 {
                     "character": "bible id of a silent character",
                     "note": "str - one first-person line of what they observed this turn"
+                }
+            ],
+            "scene_hooks": [
+                {
+                    "character": "bible id of the NPC who made the suggestion",
+                    "suggestion": "str - the concrete next step they offered",
+                    "context": "str - surrounding context"
                 }
             ]
         },
