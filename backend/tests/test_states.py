@@ -33,6 +33,8 @@ from app.types import (  # noqa: E402
     CoachReply,
     CoachRequest,
     Commitment,
+    Mission,
+    MissionDebrief,
     NarratorOutput,
     ObserverMemory,
     SceneDirectionOutput,
@@ -71,6 +73,25 @@ def _fake_model(agent, user=None):
                 ],
             )
         return ActionFeasibility(feasible=True, reason="This is within your reach.")
+    if agent == "mission_architect":
+        return Mission(
+            id=1,
+            title="Gain Matsuda's Trust",
+            description="Talk to Matsuda and get him to vouch for you with Chief Yagami.",
+            characters=["MATSUDA"],
+            location="NPA Cafeteria",
+            objective="Raise Matsuda's trust from 0 to 5 so he agrees to introduce you to Chief Yagami.",
+            reward="Matsuda introduces you to Chief Yagami, unlocking access to the Chief's office.",
+            win_conditions=[{"character": "MATSUDA", "stat": "trust", "min": 5}],
+            fail_conditions=[{"character": "MATSUDA", "stat": "suspicion", "max": 8}],
+        )
+    if agent == "mission_eval":
+        return MissionDebrief(
+            outcome="won",
+            message="Matsuda trusts you now and offered to introduce you to Chief Yagami.",
+            location="NPA Cafeteria",
+            who_is_around=["MATSUDA"],
+        )
     if agent == "scene_director":
         return SceneDirectionOutput(
             addressed_to=DIRECT_MODE["addressed_to"],

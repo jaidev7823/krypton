@@ -9,6 +9,8 @@ import type {
   CoachNotice,
   GameState,
   GameTurnCharacter,
+  Mission,
+  MissionDebrief,
   PlayerSetup,
   SceneExitHook,
   Skill,
@@ -28,6 +30,8 @@ interface GameStateStore {
   feasibility: ActionFeasibility | null;
   sceneHooks: SceneExitHook[];
   strategicPlan: string;
+  mission: Mission | null;
+  debrief: MissionDebrief | null;
   isLoading: boolean;
   error: string | null;
   audioMuted: boolean;
@@ -52,6 +56,7 @@ let entryId = 0;
 let noticeId = 0;
 
 function applyTurn(set: (fn: (s: GameStateStore) => Partial<GameStateStore>) => void, res: TurnResponse) {
+  console.log("[applyTurn]", { game_state: res.game_state, messages: res.turn.messages.length, characters: res.turn.characters.length });
   const narration = res.turn.narration;
   const playerMsgs: Extract<ChatEntry, { kind: "message" }>[] = [];
   const charMsgs: Extract<ChatEntry, { kind: "message" }>[] = [];
@@ -101,6 +106,7 @@ function applyTurn(set: (fn: (s: GameStateStore) => Partial<GameStateStore>) => 
     } else if (res.game_state === "live_scene" && res.turn.messages.length > 0) {
       entries = [...base, ...newEntries];
     }
+    console.log("[applyTurn:set]", { base: base.length, newEntries: newEntries.length, finalEntries: entries.length });
     return {
       sessionId: res.session_id,
       gameState: res.game_state,
@@ -111,6 +117,8 @@ function applyTurn(set: (fn: (s: GameStateStore) => Partial<GameStateStore>) => 
       feasibility: res.feasibility ?? null,
       sceneHooks: res.scene_hooks ?? [],
       strategicPlan: res.strategic_plan ?? s.strategicPlan,
+      mission: res.mission ?? s.mission,
+      debrief: res.debrief ?? (res.game_state === "world" ? null : s.debrief),
       notices: newNotices.length > 0 ? [...newNotices, ...s.notices].slice(0, 30) : s.notices,
       coachSkill: res.turn.coach ?? null,
     };
@@ -129,6 +137,8 @@ export const useGameStore = create<GameStateStore>((set, get) => ({
   feasibility: null,
   sceneHooks: [],
   strategicPlan: "",
+  mission: null,
+  debrief: null,
   isLoading: false,
   error: null,
   audioMuted: false,
@@ -186,6 +196,7 @@ export const useGameStore = create<GameStateStore>((set, get) => ({
 
     try {
       const res = await sendSceneMessage(sessionId, input);
+      console.log("[sendMessage:res]", { game_state: res.game_state, messages: res.turn.messages.map(m => m.speaker + ":" + m.text.slice(0, 40)) });
       applyTurn(set, res);
     } catch (e) {
       set({ error: e instanceof Error ? e.message : String(e) });

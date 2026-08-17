@@ -189,6 +189,131 @@ def build_cast_prompt(
 
 
 # ---------------------------------------------------------------------------
+# Action Mission Architect (runs once per declared action)
+# ---------------------------------------------------------------------------
+
+def build_action_mission_prompt(
+    player: PlayerSetup,
+    world: WorldBible,
+    character_states: dict[str, Any],
+    action_text: str,
+    events: list[str],
+) -> tuple[str, dict]:
+    """Generate a single mission from the player's declared action.
+
+    The player said what they want to do. This agent turns that into a
+    concrete mission with a clear objective, characters involved, and
+    stat-based win/fail conditions — so the scene has stakes and the
+    player has something to work toward.
+    """
+    live = {}
+    for cid, s in (character_states or {}).items():
+        live[cid] = {
+            "goal": s.get("goal", ""),
+            "current_problem": s.get("current_problem", ""),
+            "solution": s.get("solution", ""),
+            "stats": s.get("stats", {}),
+        }
+    system = (
+        "You are the Mission Architect for a living world negotiation game.\n"
+        "The player just declared what they want to do. Your job: turn that "
+        "into a single, concrete mission with clear win/fail conditions.\n"
+        "Rules:\n"
+        "- ONE mission only — what the player is about to attempt right now.\n"
+        "- Characters MUST come from the world bible's autonomous_players.\n"
+        "- The objective must be measurable and stat-based "
+        "(e.g. 'Raise Matsuda trust from 0 to 5').\n"
+        "- win_conditions: stat thresholds the player must reach to succeed. "
+        "Use 'min' for raising a stat, 'max' for lowering one. "
+        "Base targets on the CURRENT live stats (e.g. if trust is 0, target 5).\n"
+        "- fail_conditions: the point at which the character walks away or "
+        "the player is ejected. Make them realistic — a botched conversation "
+        "should be able to fail.\n"
+        "- Keep the mission grounded in the world's access rules — don't "
+        "promise access the world bible doesn't grant.\n"
+        "- Do NOT write dialogue or narration. This is a mission brief, not a story.\n"
+        "- Output ONLY JSON matching the schema exactly. No extra text, no markdown."
+    )
+    user = {
+        "task": "Generate one playable mission from the player's declared action.",
+        "player": player.model_dump(mode="json"),
+        "player_action": action_text,
+        "world_lore": world.model_dump(mode="json"),
+        "available_characters": [c.id for c in world.autonomous_players],
+        "current_character_states": live,
+        "recent_events": events[-5:] if events else [],
+        "output_schema": {
+            "id": 1,
+            "title": "str - short mission name",
+            "description": "str - what must happen in-world",
+            "characters": ["bible character ids involved in this scene"],
+            "location": "str - where it happens",
+            "objective": "str - measurable goal referencing current stats",
+            "reward": "str - what the player gains on success",
+            "win_conditions": [
+                {
+                    "character": "bible character id",
+                    "stat": "short stat name (trust/familiarity/respect/suspicion/rapport/disclosure_level/stress)",
+                    "min": "int - optional; stat must be >= this to win"
+                }
+            ],
+            "fail_conditions": [
+                {
+                    "character": "bible character id",
+                    "stat": "short stat name",
+                    "max": "int - optional; stat dropping to or below this = fail"
+                }
+            ],
+        },
+    }
+    return system, user
+
+
+def build_mission_eval_prompt(
+    mission: dict,
+    character_states: dict[str, Any],
+    conversation: list[dict[str, str]],
+    events: list[str],
+) -> tuple[str, dict]:
+    """Evaluate whether a mission was won, lost, or abandoned.
+
+    Runs after a scene exits. Checks the live stats against the mission's
+    win/fail conditions and produces a debrief.
+    """
+    live_stats = {}
+    for cid, s in (character_states or {}).items():
+        live_stats[cid] = s.get("stats", {})
+    system = (
+        "You are the Mission Evaluator for a living world negotiation game.\n"
+        "A scene just ended. Your job: evaluate whether the mission was "
+        "won, lost, or abandoned, and produce a player-facing debrief.\n"
+        "Rules:\n"
+        "- Check each win_condition: if ALL are met (stat >= min for raised stats), "
+        "the mission is WON.\n"
+        "- Check each fail_condition: if ANY is met (stat <= max), the mission is LOST.\n"
+        "- If neither triggered (scene ended naturally without resolution), it is ABANDONED.\n"
+        "- message: a direct, concise note to the player about what happened "
+        "and what it means for their plan.\n"
+        "- Be grounded in the actual conversation — reference what was said.\n"
+        "- Output ONLY JSON matching the schema exactly. No extra text, no markdown."
+    )
+    user = {
+        "task": "Evaluate the mission outcome.",
+        "mission": mission,
+        "live_stats": live_stats,
+        "recent_conversation": conversation[-20:] if conversation else [],
+        "world_events": events[-10:] if events else [],
+        "output_schema": {
+            "outcome": "str - 'won' | 'lost' | 'abandoned'",
+            "message": "str - player-facing debrief about what happened and what it means",
+            "location": "str - where the player is now",
+            "who_is_around": ["bible character ids still nearby"],
+        },
+    }
+    return system, user
+
+
+# ---------------------------------------------------------------------------
 # Feasibility Check (runs per action declaration)
 # ---------------------------------------------------------------------------
 
@@ -780,6 +905,11 @@ def build_scene_direction_prompt(
     Speakers run one after another (each aware of the dialogue before them),
     so the order the director picks IS the conversation.
     """
+    scene_brief = mission_context.get("scene_brief", "")
+    brief_block = (
+        f"\nSCENE BRIEF (what the player declared they want to do in this scene):\n{scene_brief}\n"
+        if scene_brief else ""
+    )
     system = (
         "You are the Scene Director of a live scene. You decide who speaks, when, and who "
         "stays quiet. You never write dialogue yourself - you only set the floor.\n"
@@ -788,14 +918,14 @@ def build_scene_direction_prompt(
         "think?' -> MATSUDA). If they spoke to the room or it is ambiguous, set null.\n"
         "- speaker_order: the characters who react, in the order they should speak. "
         "The addressed character speaks FIRST. Then whoever has the strongest stake in the "
-        "player's words, whoever reacts to the addressed character, and whoever the mission "
-        "objective most needs to hear from. Prefer a short exchange: 1-3 speakers unless the "
+        "player's words, whoever reacts to the addressed character, and whoever the scene brief's "
+        "goal most needs to hear from. Prefer a short exchange: 1-3 speakers unless the "
         "moment genuinely demands more. Do NOT make every present character speak - the player "
         "should not be flooded with replies.\n"
         "- stay_silent: everyone else present - they observe this turn and do not speak. "
         "They remember what happens but their feelings/stats do not change yet.\n"
-        "- The mission's target character (see objective/win_conditions in mission_context) must "
-        "be given the floor when the player is working toward them, so the player can always progress.\n"
+        "- The character most relevant to the scene brief must be given the floor so the player "
+        "can make progress toward their declared goal.\n"
         "- speaker_order + stay_silent must exactly cover all present ids. Never invent characters "
         "outside the present list.\n"
         "- Output ONLY JSON matching the schema exactly. No extra text, no markdown."
@@ -806,11 +936,13 @@ def build_scene_direction_prompt(
         "present_characters": present_ids,
         "character_summaries": character_summaries,
         "mission_context": mission_context,
-        "output_schema": {
-            "addressed_to": "str or null - the present character the player clearly aimed at, or null",
-            "speaker_order": ["present character ids who speak, in order - addressed first"],
-            "stay_silent": ["present character ids who stay quiet this turn (the rest of the room)"]
-        },
+    }
+    if scene_brief:
+        user["scene_brief"] = scene_brief
+    user["output_schema"] = {
+        "addressed_to": "str or null - the present character the player clearly aimed at, or null",
+        "speaker_order": ["present character ids who speak, in order - addressed first"],
+        "stay_silent": ["present character ids who stay quiet this turn (the rest of the room)"]
     }
     return system, user
 

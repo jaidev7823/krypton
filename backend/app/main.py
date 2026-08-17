@@ -24,7 +24,9 @@ from .audio_service import generate_voice
 from .db import create_session, get_session, last_turn_number, save_session_state, update_player_setup
 from .merge_turn import merge_turn
 from .prompt_builder import (
+    build_action_mission_prompt,
     build_coach_prompt,
+    build_mission_eval_prompt,
     build_r1_prompt,
     build_r2_prompt,
     build_r3_prompt,
@@ -40,6 +42,9 @@ from .types import (
     GameTurn,
     GameTurnNarration,
     GameTurnScene,
+    Mission,
+    MissionDebrief,
+    MissionObjective,
     NarratorOutput,
     PlayerSetup,
     SceneDirectionOutput,
@@ -159,6 +164,7 @@ def _dump_or_plain(value) -> Any:
 def scene_context(mission_state: dict, scene: dict) -> dict:
     return {
         "strategic_plan": mission_state.get("strategic_plan", ""),
+        "scene_brief": mission_state.get("scene_brief", ""),
         "events": mission_state.get("events") or [],
         "scene": scene,
         "turns_in_scene": int(mission_state.get("turns_elapsed") or 0),
@@ -307,6 +313,53 @@ def _run_feasibility_check(
         return ActionFeasibility(feasible=True, reason="Proceeding.")
 
 
+def _run_mission_architect(
+    player: PlayerSetup,
+    world: WorldBible,
+    character_states: dict,
+    action_text: str,
+    mission_state: dict,
+    on_attempt=None,
+) -> Mission | None:
+    """Generate a single mission from the player's declared action."""
+    system, user = build_action_mission_prompt(
+        player, world, character_states, action_text, mission_state.get("events") or [],
+    )
+    try:
+        return llm_caller.call_json(
+            system, user, Mission,
+            agent="mission_architect",
+            on_attempt=on_attempt("mission_architect") if on_attempt else None,
+        )
+    except Exception as e:
+        logger.warning("Mission architect failed: %s", e)
+        return None
+
+
+def _run_mission_eval(
+    player: PlayerSetup,
+    world: WorldBible,
+    character_states: dict,
+    mission: dict,
+    conversation: list,
+    mission_state: dict,
+    on_attempt=None,
+) -> MissionDebrief | None:
+    """Evaluate whether the mission was won, lost, or abandoned on scene exit."""
+    system, user = build_mission_eval_prompt(
+        mission, character_states, conversation, mission_state.get("events") or [],
+    )
+    try:
+        return llm_caller.call_json(
+            system, user, MissionDebrief,
+            agent="mission_eval",
+            on_attempt=on_attempt("mission_eval") if on_attempt else None,
+        )
+    except Exception as e:
+        logger.warning("Mission eval failed: %s", e)
+        return None
+
+
 def _determine_present_ids(
     action_text: str,
     world: WorldBible,
@@ -389,6 +442,7 @@ def _live_response(
     world: WorldBible,
     present_ids: list[str],
     feasibility: ActionFeasibility | None = None,
+    mission: Mission | None = None,
 ) -> TurnResponse:
     location = world.world.starting_location
     title = f"Scene with {', '.join(present_ids)}"
@@ -408,6 +462,7 @@ def _live_response(
         game_state="live_scene",
         events=mission_state.get("events") or [],
         feasibility=feasibility,
+        mission=mission,
     )
 
 
@@ -531,11 +586,19 @@ def _run_turn(body: TurnRequest) -> TurnResponse:
         if not present_ids:
             present_ids = [c.id for c in world.autonomous_players[:1]]
 
+        mission = _run_mission_architect(
+            player, world, character_states, action_text, mission_state,
+            on_attempt=on_attempt,
+        )
         mission_state["present_ids"] = present_ids
         mission_state["turns_elapsed"] = 0
+        mission_state["scene_brief"] = action_text
+        if mission:
+            mission_state["current_mission"] = mission.model_dump(mode="json")
         _sync_presence(character_states, present_ids)
         save_session_state(row.id, mission_state, character_states, conversation)
-        return _live_response(row.id, mission_state, player, world, present_ids, feasibility=feasibility)
+        return _live_response(row.id, mission_state, player, world, present_ids,
+                              feasibility=feasibility, mission=mission)
 
     # ------------------------------------------------------------------
     # STATE 2: Live Scene — R1 + Scene Director + R2 + R3 loop.
@@ -714,6 +777,19 @@ def _run_live_turn(
     )
 
     if closed:
+        debrief = None
+        current_mission = mission_state.get("current_mission")
+        if current_mission:
+            debrief = _run_mission_eval(
+                player, world, character_states, current_mission, conversation, mission_state,
+                on_attempt=on_attempt,
+            )
+            if debrief:
+                mission_state["debrief"] = debrief.model_dump(mode="json")
+                events_log = mission_state.setdefault("events", [])
+                events_log.append(f"Mission '{current_mission.get('title', '')}' {debrief.outcome}.")
+            mission_state.pop("current_mission", None)
+
         _world_tick(player, world, mission_state, character_states, present_ids,
                     on_attempt=on_attempt)
         mission_state["present_ids"] = []
@@ -727,6 +803,7 @@ def _run_live_turn(
             events=mission_state.get("events") or [],
             scene_hooks=hooks,
             strategic_plan=mission_state.get("strategic_plan", ""),
+            debrief=debrief,
         )
 
     return TurnResponse(

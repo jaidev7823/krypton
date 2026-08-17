@@ -11,6 +11,7 @@ export function WorldScreen() {
   const sceneHooks = useGameStore((s) => s.sceneHooks);
   const events = useGameStore((s) => s.events);
   const strategicPlan = useGameStore((s) => s.strategicPlan);
+  const debrief = useGameStore((s) => s.debrief);
   const declareAction = useGameStore((s) => s.declareAction);
   const [text, setText] = useState("");
 
@@ -26,6 +27,30 @@ export function WorldScreen() {
   return (
     <div className="min-h-screen bg-bg p-4 sm:p-8">
       <div className="mx-auto flex max-w-2xl flex-col gap-4">
+        {debrief && (
+          <motion.div
+            initial={{ opacity: 0, y: 10 }}
+            animate={{ opacity: 1, y: 0 }}
+            className={`rounded-xl border p-4 ${
+              debrief.outcome === "won"
+                ? "border-accent/40 bg-accent/10"
+                : debrief.outcome === "lost"
+                  ? "border-suspicion/40 bg-suspicion/10"
+                  : "border-muted/40 bg-muted/10"
+            }`}
+          >
+            <p className="text-xs font-semibold uppercase tracking-wide text-muted">
+              {debrief.outcome === "won" ? "Mission Complete" : debrief.outcome === "lost" ? "Mission Failed" : "Scene Ended"}
+            </p>
+            <p className="mt-1.5 text-sm text-ink">{debrief.message}</p>
+            {debrief.who_is_around && debrief.who_is_around.length > 0 && (
+              <p className="mt-2 text-xs text-muted">
+                Nearby: {debrief.who_is_around.join(", ")}
+              </p>
+            )}
+          </motion.div>
+        )}
+
         {meanwhile.length > 0 && (
           <motion.div
             initial={{ opacity: 0, y: 10 }}

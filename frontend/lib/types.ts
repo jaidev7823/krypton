@@ -115,6 +115,32 @@ export interface WorldBible {
 
 export type GameState = "setup" | "world" | "live_scene";
 
+export interface MissionObjective {
+  character: string;
+  stat: string;
+  min?: number;
+  max?: number;
+}
+
+export interface Mission {
+  id: number;
+  title: string;
+  description: string;
+  characters: string[];
+  location: string;
+  objective: string;
+  reward: string;
+  win_conditions: MissionObjective[];
+  fail_conditions: MissionObjective[];
+}
+
+export interface MissionDebrief {
+  outcome: "won" | "lost" | "abandoned";
+  message: string;
+  location: string;
+  who_is_around: string[];
+}
+
 export interface TurnResponse {
   session_id: string;
   turn: GameTurn;
@@ -124,6 +150,8 @@ export interface TurnResponse {
   feasibility?: ActionFeasibility | null;
   scene_hooks?: SceneExitHook[];
   strategic_plan?: string;
+  mission?: Mission | null;
+  debrief?: MissionDebrief | null;
 }
 
 export interface AudioResponse {

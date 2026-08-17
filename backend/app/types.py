@@ -245,6 +245,35 @@ class SceneExitHook(PermissiveModel):
     context: str = ""
 
 
+class MissionObjective(PermissiveModel):
+    """A single win or fail condition on a stat."""
+    character: str = ""
+    stat: str = ""
+    min: int = 0
+    max: int = 10
+
+
+class Mission(PermissiveModel):
+    """A single mission generated from the player's declared action."""
+    id: int = 1
+    title: str = ""
+    description: str = ""
+    characters: list[str] = Field(default_factory=list)
+    location: str = ""
+    objective: str = ""
+    reward: str = ""
+    win_conditions: list[MissionObjective] = Field(default_factory=list)
+    fail_conditions: list[MissionObjective] = Field(default_factory=list)
+
+
+class MissionDebrief(PermissiveModel):
+    """What happened when the mission ended."""
+    outcome: str = ""  # "won" | "lost" | "abandoned"
+    message: str = ""
+    location: str = ""
+    who_is_around: list[str] = Field(default_factory=list)
+
+
 class NextMission(PermissiveModel):
     title: str = ""
     why_important: str = ""
@@ -400,3 +429,5 @@ class TurnResponse(PermissiveModel):
     feasibility: Optional[ActionFeasibility] = None
     scene_hooks: list[SceneExitHook] = Field(default_factory=list)
     strategic_plan: str = ""
+    mission: Optional[Mission] = None
+    debrief: Optional[MissionDebrief] = None
