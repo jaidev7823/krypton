@@ -12,7 +12,7 @@ export interface StatChange {
 }
 
 export interface GameTurnMessage {
-  speaker: string; // character id or "PLAYER"
+  speaker: string;
   text: string;
   audio_path?: string | null;
   inner_thought?: string | null;
@@ -34,32 +34,18 @@ export interface GameTurnCharacter {
   present: boolean;
 }
 
-export interface WinCondition {
-  character: string;
-  stat: string;
-  min?: number;
-  max?: number;
-}
-
-export interface GameTurnMission {
-  id: number;
-  title: string;
-  description: string;
-  why_important: string;
-  reason?: string;
-  status: string;
-  chain_progress: string;
-  location: string;
-  characters: string[];
-  objective: string;
-  reward: string;
-  win_conditions: WinCondition[];
-}
-
 export interface GameTurnNarration {
   text: string;
   where: string;
   why_here: string;
+}
+
+export interface GameTurnScene {
+  title: string;
+  location?: string;
+  characters?: string[];
+  strategic_plan?: string;
+  scene_hooks?: SceneExitHook[];
 }
 
 export interface GameTurn {
@@ -67,8 +53,7 @@ export interface GameTurn {
   narration: GameTurnNarration;
   messages: GameTurnMessage[];
   characters: GameTurnCharacter[];
-  mission: GameTurnMission;
-  scene_update: { characters_entered: string[]; characters_left: string[] };
+  scene?: GameTurnScene;
   coach?: Skill | null;
 }
 
@@ -90,19 +75,19 @@ export interface PlayerSetup {
   background: string;
   starting_position: string;
   own_plan: string;
+  skill_choice?: string;
 }
 
-export interface Mission {
-  id: number;
-  title: string;
-  description: string;
-  why_important: string;
-  reason?: string;
-  status: string;
-  location: string;
-  characters: string[];
-  objective: string;
-  reward: string;
+export interface ActionFeasibility {
+  feasible: boolean;
+  reason: string;
+  suggestions?: string[];
+}
+
+export interface SceneExitHook {
+  character: string;
+  suggestion: string;
+  context?: string;
 }
 
 export interface CharacterStats {
@@ -128,50 +113,17 @@ export interface WorldBible {
   autonomous_players: BibleCharacter[];
 }
 
-export type GameState =
-  | "plan_elicitation"
-  | "plan_revision"
-  | "mission_lobby"
-  | "live_mission"
-  | "complete";
-
-export interface MissionDebrief {
-  message: string;
-  location: string;
-  who_is_around: string[];
-}
-
-export interface FeasibilityBlocker {
-  step: string;
-  why_blocked: string;
-  how_to_unlock: string;
-}
-
-export interface FeasibleStep {
-  step: string;
-  target_character: string;
-  objective: string;
-  reason: string;
-}
-
-export interface FeasibilityReport {
-  feasible: boolean;
-  verdict: string;
-  blockers: FeasibilityBlocker[];
-  path: FeasibleStep[];
-  reframe: string;
-}
+export type GameState = "setup" | "world" | "live_scene";
 
 export interface TurnResponse {
   session_id: string;
   turn: GameTurn;
   game_state: GameState;
-  mission_chain: Mission[];
   world?: WorldBible | null;
-  debrief?: MissionDebrief | null;
   events?: string[];
-  reconcile_shift?: string | null;
-  feasibility?: FeasibilityReport | null;
+  feasibility?: ActionFeasibility | null;
+  scene_hooks?: SceneExitHook[];
+  strategic_plan?: string;
 }
 
 export interface AudioResponse {
@@ -186,7 +138,6 @@ export interface CoachMessage {
   content: string;
 }
 
-// Normalized chat entry used by the UI
 export type ChatEntry =
   | { kind: "narration"; id: string; text: string; where: string; why_here: string }
   | {

@@ -1,18 +1,16 @@
 "use client";
 
 import { create } from "zustand";
-import { askCoach, enterMission, getAudio, nextTurn, openRevision, revisePlan, startGame } from "@/lib/api";
+import { askCoach, declareAction, getAudio, sendSceneMessage, startGame } from "@/lib/api";
 import type {
+  ActionFeasibility,
   ChatEntry,
   CoachMessage,
   CoachNotice,
-  FeasibilityReport,
   GameState,
   GameTurnCharacter,
-  GameTurnMission,
-  Mission,
-  MissionDebrief,
   PlayerSetup,
+  SceneExitHook,
   Skill,
   TurnResponse,
   WorldBible,
@@ -24,14 +22,12 @@ interface GameStateStore {
   gameState: GameState;
   entries: ChatEntry[];
   characters: GameTurnCharacter[];
-  mission: GameTurnMission | null;
-  missionChain: Mission[];
   world: WorldBible | null;
-  debrief: MissionDebrief | null;
   events: string[];
-  shiftNotice: string | null;
   notices: CoachNotice[];
-  feasibility: FeasibilityReport | null;
+  feasibility: ActionFeasibility | null;
+  sceneHooks: SceneExitHook[];
+  strategicPlan: string;
   isLoading: boolean;
   error: string | null;
   audioMuted: boolean;
@@ -42,11 +38,9 @@ interface GameStateStore {
   coachMessages: CoachMessage[];
   coachLoading: boolean;
 
-  setupPlayer: (p: PlayerSetup) => Promise<void>;
-  startMission: () => Promise<void>;
+  setupPlayer: (p: PlayerSetup, planText: string) => Promise<void>;
+  declareAction: (actionText: string) => Promise<void>;
   sendMessage: (text: string) => Promise<void>;
-  submitNewPlan: (planText: string) => Promise<void>;
-  requestRevision: () => Promise<void>;
   selectCharacter: (id: string | null) => void;
   toggleAudio: () => void;
   openCoach: (skill: Skill | null) => void;
@@ -59,8 +53,6 @@ let noticeId = 0;
 
 function applyTurn(set: (fn: (s: GameStateStore) => Partial<GameStateStore>) => void, res: TurnResponse) {
   const narration = res.turn.narration;
-  // Narration is placed BELOW the player's own message, so the player reads
-  // what they just said first, then the world's reaction.
   const playerMsgs: Extract<ChatEntry, { kind: "message" }>[] = [];
   const charMsgs: Extract<ChatEntry, { kind: "message" }>[] = [];
   for (const m of res.turn.messages) {
@@ -99,34 +91,26 @@ function applyTurn(set: (fn: (s: GameStateStore) => Partial<GameStateStore>) => 
   }
 
   set((s) => {
-    // Drop the optimistic pending player entry - the server echoes the same
-    // words back in res.turn.messages.
     const base = s.entries.filter((e) => !(e.kind === "message" && e.pending));
-    // Append entries only for turns that carry real game content. Pure lobby /
-    // elicitation responses are screens, not chat. A won live turn still
-    // returns mission_lobby but carries the debrief exchange -> append it.
-    const hasContent =
-      res.game_state === "live_mission" ||
-      res.game_state === "complete" ||
-      res.turn.messages.length > 0;
     let entries = base;
-    if (res.game_state === "plan_elicitation") {
+    if (res.game_state === "setup") {
       entries = [];
-    } else if (hasContent) {
+    } else if (res.game_state === "world") {
+      // World state: append narration (action prompt), keep chat history
+      entries = [...base, narrationEntry];
+    } else if (res.game_state === "live_scene" && res.turn.messages.length > 0) {
       entries = [...base, ...newEntries];
     }
     return {
       sessionId: res.session_id,
       gameState: res.game_state,
-      missionChain: res.mission_chain ?? s.missionChain,
       world: res.world ?? s.world,
       entries,
       characters: res.turn.characters,
-      mission: res.turn.mission,
-      debrief: res.debrief ?? null,
       events: res.events && res.events.length > 0 ? res.events : s.events,
-      shiftNotice: res.reconcile_shift ?? null,
       feasibility: res.feasibility ?? null,
+      sceneHooks: res.scene_hooks ?? [],
+      strategicPlan: res.strategic_plan ?? s.strategicPlan,
       notices: newNotices.length > 0 ? [...newNotices, ...s.notices].slice(0, 30) : s.notices,
       coachSkill: res.turn.coach ?? null,
     };
@@ -136,17 +120,15 @@ function applyTurn(set: (fn: (s: GameStateStore) => Partial<GameStateStore>) => 
 export const useGameStore = create<GameStateStore>((set, get) => ({
   player: null,
   sessionId: null,
-  gameState: "plan_elicitation",
+  gameState: "setup",
   entries: [],
   characters: [],
-  mission: null,
-  missionChain: [],
   world: null,
-  debrief: null,
   events: [],
-  shiftNotice: null,
   notices: [],
   feasibility: null,
+  sceneHooks: [],
+  strategicPlan: "",
   isLoading: false,
   error: null,
   audioMuted: false,
@@ -157,10 +139,10 @@ export const useGameStore = create<GameStateStore>((set, get) => ({
   coachMessages: [],
   coachLoading: false,
 
-  setupPlayer: async (p) => {
-    set({ isLoading: true, error: null, player: p });
+  setupPlayer: async (p, planText) => {
+    set({ isLoading: true, error: null, player: p, strategicPlan: planText });
     try {
-      const res = await startGame(p);
+      const res = await startGame(p, planText);
       applyTurn(set, res);
     } catch (e) {
       set({ error: e instanceof Error ? e.message : String(e) });
@@ -169,12 +151,12 @@ export const useGameStore = create<GameStateStore>((set, get) => ({
     }
   },
 
-  startMission: async () => {
+  declareAction: async (actionText) => {
     const { sessionId } = get();
-    if (!sessionId || get().isLoading) return;
+    if (!sessionId || !actionText.trim() || get().isLoading) return;
     set({ isLoading: true, error: null });
     try {
-      const res = await enterMission(sessionId);
+      const res = await declareAction(sessionId, actionText.trim());
       applyTurn(set, res);
     } catch (e) {
       set({ error: e instanceof Error ? e.message : String(e) });
@@ -184,34 +166,26 @@ export const useGameStore = create<GameStateStore>((set, get) => ({
   },
 
   sendMessage: async (text) => {
-    const { player, sessionId } = get();
-    if (!player || !text.trim() || get().isLoading) return;
-
+    const { sessionId } = get();
+    if (!sessionId || !text.trim() || get().isLoading) return;
     set({ isLoading: true, error: null });
     const input = text.trim();
 
-    // Optimistic: the player's own message shows immediately instead of
-    // waiting for the whole world to react. The server echoes it back and the
-    // pending copy is dropped in applyTurn.
-    if (sessionId) {
-      set((s) => ({
-        entries: [
-          ...s.entries,
-          {
-            kind: "message",
-            id: `pending-${entryId++}`,
-            speaker: "PLAYER",
-            text: input,
-            pending: true,
-          } satisfies ChatEntry,
-        ],
-      }));
-    }
+    set((s) => ({
+      entries: [
+        ...s.entries,
+        {
+          kind: "message",
+          id: `pending-${entryId++}`,
+          speaker: "PLAYER",
+          text: input,
+          pending: true,
+        } satisfies ChatEntry,
+      ],
+    }));
 
     try {
-      const res = sessionId
-        ? await nextTurn(sessionId, input)
-        : await startGame(player);
+      const res = await sendSceneMessage(sessionId, input);
       applyTurn(set, res);
     } catch (e) {
       set({ error: e instanceof Error ? e.message : String(e) });
@@ -220,38 +194,9 @@ export const useGameStore = create<GameStateStore>((set, get) => ({
     }
   },
 
-  submitNewPlan: async (planText) => {
-    const { sessionId } = get();
-    if (!sessionId || !planText.trim() || get().isLoading) return;
-    set({ isLoading: true, error: null });
-    try {
-      const res = await revisePlan(sessionId, planText.trim());
-      applyTurn(set, res);
-    } catch (e) {
-      set({ error: e instanceof Error ? e.message : String(e) });
-    } finally {
-      set({ isLoading: false });
-    }
-  },
-
-  requestRevision: async () => {
-    const { sessionId } = get();
-    if (!sessionId || get().isLoading) return;
-    set({ isLoading: true, error: null });
-    try {
-      const res = await openRevision(sessionId);
-      applyTurn(set, res);
-    } catch (e) {
-      set({ error: e instanceof Error ? e.message : String(e) });
-    } finally {
-      set({ isLoading: false });
-    }
-  },
-
-  selectCharacter: (id) => set({ selectedCharacterId: id }),  toggleAudio: () => set({ audioMuted: !get().audioMuted }),
-
+  selectCharacter: (id) => set({ selectedCharacterId: id }),
+  toggleAudio: () => set({ audioMuted: !get().audioMuted }),
   openCoach: (skill) => set({ coachSkill: skill }),
-
   toggleCoach: () => set({ coachOpen: !get().coachOpen }),
 
   askCoach: async (text) => {
@@ -279,7 +224,6 @@ export const useGameStore = create<GameStateStore>((set, get) => ({
   },
 }));
 
-// Audio helper shared by CharacterMessage
 export async function ensureAudioPath(
   audioPaths: Record<string, string>,
   speaker: string,

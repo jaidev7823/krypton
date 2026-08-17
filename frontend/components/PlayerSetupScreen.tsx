@@ -72,7 +72,7 @@ export function PlayerSetupScreen() {
     };
 
     if (!p.character_name || !p.goal || !p.own_plan) return;
-    setupPlayer(p);
+    setupPlayer(p, p.own_plan);
   };
 
   return (

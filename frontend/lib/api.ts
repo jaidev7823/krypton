@@ -15,42 +15,29 @@ async function post<T>(path: string, body: unknown): Promise<T> {
   return res.json() as Promise<T>;
 }
 
-export function startGame(playerSetup: PlayerSetup): Promise<TurnResponse> {
+export function startGame(playerSetup: PlayerSetup, planText: string): Promise<TurnResponse> {
   return post<TurnResponse>("/api/turn", {
     player_setup: playerSetup,
-    action: "submit_plan",
-    plan_text: playerSetup.own_plan,
-    new_player_input: "",
-  });
-}
-
-export function enterMission(sessionId: string): Promise<TurnResponse> {
-  return post<TurnResponse>("/api/turn", {
-    session_id: sessionId,
-    action: "enter_mission",
-    new_player_input: "",
-  });
-}
-
-export function openRevision(sessionId: string): Promise<TurnResponse> {
-  return post<TurnResponse>("/api/turn", {
-    session_id: sessionId,
-    action: "revise_plan",
-    new_player_input: "",
-  });
-}
-
-export function revisePlan(sessionId: string, planText: string): Promise<TurnResponse> {
-  return post<TurnResponse>("/api/turn", {
-    session_id: sessionId,
-    action: "submit_plan",
+    action: "setup",
     plan_text: planText,
     new_player_input: "",
   });
 }
 
-export function nextTurn(sessionId: string, input: string): Promise<TurnResponse> {
-  return post<TurnResponse>("/api/turn", { session_id: sessionId, new_player_input: input });
+export function declareAction(sessionId: string, actionText: string): Promise<TurnResponse> {
+  return post<TurnResponse>("/api/turn", {
+    session_id: sessionId,
+    action: "declare_action",
+    new_player_input: actionText,
+  });
+}
+
+export function sendSceneMessage(sessionId: string, input: string): Promise<TurnResponse> {
+  return post<TurnResponse>("/api/turn", {
+    session_id: sessionId,
+    action: "scene",
+    new_player_input: input,
+  });
 }
 
 export function getAudio(characterId: string, dialogue: string): Promise<AudioResponse> {
