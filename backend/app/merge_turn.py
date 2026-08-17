@@ -1,6 +1,6 @@
-"""Merge R1 + R2 + R3 into the single Game Turn JSON (Piece 5).
+"""Merge R1 + R2 into the single Game Turn JSON (Piece 5).
 
-This is packaging only - no LLM work. It shapes the three raw outputs into
+This is packaging only - no LLM work. It shapes the raw outputs into
 the one contract the frontend and audio layer consume.
 """
 
@@ -14,8 +14,6 @@ from .types import (
     GameTurnCharacter,
     GameTurnMessage,
     GameTurnScene,
-    GameTurnNarration,
-    NarratorOutput,
     SkillFeedback,
 )
 
@@ -33,15 +31,13 @@ def merge_turn(
     turn_id: int,
     r1_output: SkillFeedback,
     r2_outputs: list[CharacterBrainOutput],
-    r3_output: NarratorOutput,
     player_input: str,
     player_name: str,
     characters_state: list[dict[str, Any]],
     scene_state: Optional[dict[str, Any]] = None,
 ) -> GameTurn:
-    """Build the final GameTurn from the three raw outputs and persisted state."""
+    """Build the final GameTurn from the raw outputs and persisted state."""
 
-    # Scene context
     scene = GameTurnScene(
         title=scene_state.get("title", "") if scene_state else "",
         location=scene_state.get("location", "") if scene_state else "",
@@ -51,7 +47,6 @@ def merge_turn(
         scene_hooks=[],
     )
 
-    # Character summaries (with live stats + deltas + memory + problem/solution)
     chars_by_id = {c["id"]: c for c in characters_state}
     characters: list[GameTurnCharacter] = []
     for out in r2_outputs:
@@ -75,16 +70,6 @@ def merge_turn(
             )
         )
 
-    # Narration
-    narration = GameTurnNarration(
-        text=r3_output.narration,
-        where=r3_output.where,
-        why_here=r3_output.why_here,
-    )
-
-    # Messages: player input first, then character dialogues. Each character
-    # message carries the stat deltas that speech caused, so the UI can show
-    # "+1 trust" right on the bubble.
     messages: list[GameTurnMessage] = []
     if player_input.strip():
         messages.append(
@@ -111,9 +96,7 @@ def merge_turn(
 
     return GameTurn(
         turn_id=turn_id,
-        narration=narration,
         messages=messages,
         characters=characters,
         scene=scene,
-        scene_update=r3_output.scene_update,
     )

@@ -35,11 +35,7 @@ from app.types import (  # noqa: E402
     Commitment,
     Mission,
     MissionDebrief,
-    NarratorOutput,
-    ObserverMemory,
     SceneDirectionOutput,
-    SceneExitDecision,
-    SceneExitHook,
     SkillFeedback,
     StatChange,
     StatChanges,
@@ -51,10 +47,8 @@ from app.types import NpcAction, NpcEffect  # noqa: E402
 CALLS: list[str] = []
 last_r2_user: dict = {}
 BRAIN_MODE = {"fail": False, "commit": False, "stall": False}
-NARRATOR_LEAVE_ALL = {"on": False}
-NARRATOR_CLOSE = {"on": False}
 FEASIBILITY_MODE = {"blocked": False}
-SCENE_EXIT = {"on": False}
+SCENE_EXIT_TOOL = {"on": False}
 DIRECT_MODE = {
     "addressed_to": "MATSUDA",
     "speaker_order": ["MATSUDA", "SOICHIRO"],
@@ -102,14 +96,6 @@ def _fake_model(agent, user=None):
             location="NPA Cafeteria",
             who_is_around=["MATSUDA"],
         )
-    if agent == "scene_exit":
-        if SCENE_EXIT["on"]:
-            return SceneExitDecision(
-                should_exit=True,
-                reason="Scene has run its course.",
-                characters_left=["MATSUDA"],
-            )
-        return SceneExitDecision(should_exit=False)
     if agent == "scene_director":
         return SceneDirectionOutput(
             addressed_to=DIRECT_MODE["addressed_to"],
@@ -146,6 +132,7 @@ def _fake_model(agent, user=None):
                 dialogue=f"{cid} gets frustrated and leaves",
                 memory=f"{cid} left because the player alienated me.",
                 inner_thought=f"{cid} thinks this is hopeless",
+                tool_calls=["end_conversation"] if SCENE_EXIT_TOOL["on"] else [],
                 stat_changes=StatChanges(
                     trust=StatChange(delta=-4, reason="Player was off-putting"),
                     suspicion=StatChange(delta=2, reason="Now distrustful"),
@@ -165,6 +152,7 @@ def _fake_model(agent, user=None):
             dialogue=f"{cid} speaks",
             memory=f"A stranger came up to me and said hello.",
             inner_thought=f"{cid} thinks",
+            tool_calls=["end_conversation"] if SCENE_EXIT_TOOL["on"] else [],
             commitment_made=(Commitment(character=cid, target_character="SOICHIRO",
                                         about="ask Chief Soichiro about the player", status="open")
                              if BRAIN_MODE["commit"] and cid == "MATSUDA" else None),
@@ -178,31 +166,6 @@ def _fake_model(agent, user=None):
                 stress=StatChange(delta=0 if BRAIN_MODE["stall"] else -1, reason="Reassured"),
             ),
         )
-    if agent == "narrator":
-        scene_update = {}
-        if NARRATOR_LEAVE_ALL["on"]:
-            scene_update = {"conversation_over": True, "characters_left": ["MATSUDA"]}
-        elif NARRATOR_CLOSE["on"]:
-            scene_update = {"conversation_over": True, "ending": "character_walked_away",
-                            "characters_left": ["MATSUDA"]}
-        observer_memories = [
-            ObserverMemory(character=cid,
-                           note="I stayed quiet and watched the others talk to the player.")
-            for cid in (user.get("silent") or [])
-        ]
-        hooks = []
-        if NARRATOR_CLOSE["on"]:
-            hooks = [SceneExitHook(
-                character="MATSUDA",
-                suggestion="Follow me to Chief Soichiro's office",
-                context="Matsuda offered to introduce you to the Chief after the conversation.",
-            )]
-        return NarratorOutput(narration="The cafeteria hums.",
-                              where="Cafeteria",
-                              why_here="Scene in progress",
-                              scene_update=scene_update,
-                              observer_memories=observer_memories,
-                              scene_hooks=hooks)
     raise AssertionError(f"unexpected agent {agent}")
 
 
@@ -296,17 +259,6 @@ def run_checks():
               for m in row.conversation),
           "player message persisted in conversation")
 
-    # ---- SCENE EXIT: conversation_over -> back to world with hooks ----
-    # R3 temporarily disabled, so conversation_over never triggers.
-    # Scene exits via turn cap or empty room instead.
-    # CALLS.clear()
-    # NARRATOR_CLOSE["on"] = True
-    # r = main._run_turn(TurnRequest(session_id=sid, new_player_input="Thanks, see you"))
-    # NARRATOR_CLOSE["on"] = False
-    # check(r.game_state == "world", "scene exit -> world")
-    # check(len(r.scene_hooks) > 0, "NPC suggestion surfaced as scene hook")
-    # check(r.scene_hooks[0].character == "MATSUDA", "hook attributed to MATSUDA")
-
     # ---- DECLARE ACTION (blocked): feasibility check rejects ----
     FEASIBILITY_MODE["blocked"] = True
     r = main._run_turn(TurnRequest(session_id=sid, action="declare_action",
@@ -350,20 +302,19 @@ def run_checks():
           "coach answers with a concrete skill")
 
     # ---- EMPTY ROOM: everyone leaves -> back to world ----
-    # R3 temporarily disabled, so NARRATOR_LEAVE_ALL doesn't trigger.
-    # r = main._run_turn(TurnRequest(player_setup=json.loads(json.dumps(setup_json())),
-    #                                new_player_input="", action="setup",
-    #                                plan_text="Get close to Matsuda"))
-    # empty_sid = r.session_id
-    # main._run_turn(TurnRequest(session_id=empty_sid, action="declare_action",
-    #                             new_player_input="Talk to Matsuda"))
-    # NARRATOR_LEAVE_ALL["on"] = True
-    # r = main._run_turn(TurnRequest(session_id=empty_sid, new_player_input="Hello"))
-    # NARRATOR_LEAVE_ALL["on"] = False
-    # check(r.game_state == "world", "all left -> back to world")
-    # row = db_module.get_session(empty_sid)
-    # present = [cid for cid, s in row.character_states.items() if s.get("present")]
-    # check("MATSUDA" not in present, "MATSUDA no longer present after leaving")
+    r = main._run_turn(TurnRequest(player_setup=json.loads(json.dumps(setup_json())),
+                                   new_player_input="", action="setup",
+                                   plan_text="Get close to Matsuda"))
+    empty_sid = r.session_id
+    main._run_turn(TurnRequest(session_id=empty_sid, action="declare_action",
+                                new_player_input="Talk to Matsuda"))
+    SCENE_EXIT_TOOL["on"] = True
+    r = main._run_turn(TurnRequest(session_id=empty_sid, new_player_input="Hello"))
+    SCENE_EXIT_TOOL["on"] = False
+    check(r.game_state == "world", "all left -> back to world")
+    row = db_module.get_session(empty_sid)
+    present = [cid for cid, s in row.character_states.items() if s.get("present")]
+    check("MATSUDA" not in present, "MATSUDA no longer present after leaving")
 
     # ---- TURN-CAP: stalled scene wraps up ----
     r = main._run_turn(TurnRequest(player_setup=json.loads(json.dumps(setup_json())),
@@ -423,28 +374,27 @@ def run_checks():
           "silenced character's stats frozen")
     # mem = row.character_states["SOICHIRO"]["memory"]
     # check(any("stayed quiet" in m for m in mem),
-    #       "narrator wrote observer memory for silent character")  # R3 temporarily disabled
+    #       "narrator wrote observer memory for silent character")  # R3 disabled
 
     # ---- HARSH FAIL: character walks out, scene ends ----
-    # R3 temporarily disabled, so NARRATOR_CLOSE doesn't trigger scene exit.
-    # r = main._run_turn(TurnRequest(player_setup=json.loads(json.dumps(setup_json())),
-    #                                new_player_input="", action="setup",
-    #                                plan_text="Get close to Matsuda"))
-    # harsh_sid = r.session_id
-    # main._run_turn(TurnRequest(session_id=harsh_sid, action="declare_action",
-    #                             new_player_input="Talk to Matsuda"))
-    # BRAIN_MODE["fail"] = True
-    # NARRATOR_CLOSE["on"] = True
-    # r = main._run_turn(TurnRequest(session_id=harsh_sid, new_player_input="Rude outburst"))
-    # BRAIN_MODE["fail"] = False
-    # NARRATOR_CLOSE["on"] = False
-    # check(r.game_state == "world", "harsh fail -> back to world")
-    # row = db_module.get_session(harsh_sid)
-    # check(row.character_states["MATSUDA"]["stats"]["trust_towards_player"] == 0,
-    #       "trust cratered after harsh fail")
-    # mem = row.character_states["MATSUDA"]["memory"]
-    # check(any("left" in m.lower() or "frustrated" in m.lower() for m in mem),
-    #       "MATSUDA memory records the fallout")
+    r = main._run_turn(TurnRequest(player_setup=json.loads(json.dumps(setup_json())),
+                                   new_player_input="", action="setup",
+                                   plan_text="Get close to Matsuda"))
+    harsh_sid = r.session_id
+    main._run_turn(TurnRequest(session_id=harsh_sid, action="declare_action",
+                                new_player_input="Talk to Matsuda"))
+    BRAIN_MODE["fail"] = True
+    SCENE_EXIT_TOOL["on"] = True
+    r = main._run_turn(TurnRequest(session_id=harsh_sid, new_player_input="Rude outburst"))
+    BRAIN_MODE["fail"] = False
+    SCENE_EXIT_TOOL["on"] = False
+    check(r.game_state == "world", "harsh fail -> back to world")
+    row = db_module.get_session(harsh_sid)
+    check(row.character_states["MATSUDA"]["stats"]["trust_towards_player"] == 0,
+          "trust cratered after harsh fail")
+    mem = row.character_states["MATSUDA"]["memory"]
+    check(any("left" in m.lower() or "frustrated" in m.lower() for m in mem),
+          "MATSUDA memory records the fallout")
 
     print("\nALL STATE CHECKS PASSED")
 

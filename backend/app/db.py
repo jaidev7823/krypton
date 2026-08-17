@@ -54,7 +54,6 @@ class TurnLogRow(SQLModel, table=True):
     player_input: str = ""
     r1_output: dict = Field(default_factory=dict, sa_column=Column(JSON))
     r2_outputs: list = Field(default_factory=list, sa_column=Column(JSON))
-    r3_output: dict = Field(default_factory=dict, sa_column=Column(JSON))
     game_turn: dict = Field(default_factory=dict, sa_column=Column(JSON))
     model: str = ""
     provider: str = ""
@@ -134,7 +133,6 @@ def log_turn(
     player_input: str,
     r1_output: dict,
     r2_outputs: list,
-    r3_output: dict,
     game_turn: dict,
     model: str,
     provider: str,
@@ -147,7 +145,6 @@ def log_turn(
                 player_input=player_input,
                 r1_output=r1_output,
                 r2_outputs=r2_outputs,
-                r3_output=r3_output,
                 game_turn=game_turn,
                 model=model,
                 provider=provider,

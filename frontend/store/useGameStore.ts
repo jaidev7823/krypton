@@ -79,7 +79,10 @@ function applyTurn(set: (fn: (s: GameStateStore) => Partial<GameStateStore>) => 
     where: narration.where,
     why_here: narration.why_here,
   };
-  const newEntries: ChatEntry[] = [...playerMsgs, narrationEntry, ...charMsgs];
+  const newEntries: ChatEntry[] = [...playerMsgs, ...charMsgs];
+  if (narrationEntry.text) {
+    newEntries.splice(playerMsgs.length, 0, narrationEntry);
+  }
 
   const newNotices: CoachNotice[] = [];
   for (const pm of playerMsgs) {

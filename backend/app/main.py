@@ -29,9 +29,7 @@ from .prompt_builder import (
     build_mission_eval_prompt,
     build_r1_prompt,
     build_r2_prompt,
-    build_r3_prompt,
     build_scene_direction_prompt,
-    build_scene_exit_prompt,
     build_world_tick_prompt,
     stat_readout,
 )
@@ -46,10 +44,8 @@ from .types import (
     Mission,
     MissionDebrief,
     MissionObjective,
-    NarratorOutput,
     PlayerSetup,
     SceneDirectionOutput,
-    SceneExitDecision,
     SceneExitHook,
     SkillBible,
     SkillFeedback,
@@ -211,22 +207,6 @@ def apply_r2(state: dict, out: CharacterBrainOutput) -> None:
 SCENE_STALL_LIMIT = 15
 
 
-def _scene_exit_detected(
-    r3_scene: dict,
-    present_ids: list[str],
-    turns_elapsed: int,
-) -> bool:
-    """Did the scene end naturally? Player left, NPC left, or conversation stalled."""
-    if r3_scene.get("conversation_over"):
-        return True
-    left = set(r3_scene.get("characters_left") or [])
-    if present_ids and all(cid in left for cid in present_ids):
-        return True
-    if turns_elapsed >= SCENE_STALL_LIMIT:
-        return True
-    return False
-
-
 def _commitment_key(c: dict) -> str:
     return f"{c.get('character', '')}|{c.get('target_character', '')}|{c.get('about', '')}"
 
@@ -366,26 +346,6 @@ def _run_mission_eval(
         return None
 
 
-def _run_scene_exit_check(
-    player, world, mission_state, character_states, conversation,
-    present_ids, new_player_input, on_attempt=None,
-) -> SceneExitDecision:
-    """Check if the scene should end this turn."""
-    mission = mission_state.get("current_mission")
-    turns = int(mission_state.get("turns_elapsed") or 0)
-    system, user = build_scene_exit_prompt(
-        mission, present_ids, character_states, conversation, turns, new_player_input,
-    )
-    try:
-        return llm_caller.call_json(
-            system, user, SceneExitDecision,
-            agent="scene_exit", on_attempt=on_attempt("scene_exit") if on_attempt else None,
-        )
-    except Exception as e:
-        logger.warning("Scene exit check failed: %s", e)
-        return SceneExitDecision(should_exit=False)
-
-
 def _determine_present_ids(
     action_text: str,
     world: WorldBible,
@@ -417,11 +377,6 @@ def _determine_present_ids(
             unique.append(cid)
             seen.add(cid)
     return unique
-
-
-def _scene_exit_hooks(r3: NarratorOutput) -> list[SceneExitHook]:
-    """Extract NPC suggestions from the scene exit."""
-    return [h for h in (r3.scene_hooks or []) if h.character and h.suggestion.strip()]
 
 
 def _world_response(
@@ -631,7 +586,7 @@ def _run_turn(body: TurnRequest) -> TurnResponse:
                               feasibility=feasibility, mission=mission)
 
     # ------------------------------------------------------------------
-    # STATE 2: Live Scene — R1 + Scene Director + R2 + R3 loop.
+    # STATE 2: Live Scene — R1 + Scene Director + R2 loop.
     # ------------------------------------------------------------------
     return _run_live_turn(
         body, row, player, world, skill, mission_state, character_states, conversation,
@@ -742,27 +697,32 @@ def _run_live_turn(
 
     mission_state["turns_elapsed"] = int(mission_state.get("turns_elapsed") or 0) + 1
 
-    # --- Scene exit check ---
-    r3 = NarratorOutput(narration="", where="", why_here="")
-    exit_decision = _run_scene_exit_check(
-        player, world, mission_state, character_states, conversation,
-        present_ids, body.new_player_input, on_attempt=on_attempt,
-    )
+    # --- Scene exit via NPC tool calls ---
+    chars_leaving = []
+    for out in r2_outputs:
+        for tc in (out.tool_calls or []):
+            if tc == "end_conversation":
+                chars_leaving.append(out.character_id)
 
-    closed = exit_decision.should_exit
-    turns_elapsed = int(mission_state.get("turns_elapsed") or 0)
-    if not closed and turns_elapsed >= 15:
-        closed = True
-        exit_decision.reason = "Scene has gone on too long."
-    if closed and exit_decision.characters_left:
-        for cid in exit_decision.characters_left:
+    if chars_leaving:
+        for cid in chars_leaving:
             if cid in character_states:
                 character_states[cid]["present"] = False
-        present_ids = [cid for cid in present_ids if cid not in exit_decision.characters_left]
+        present_ids = [cid for cid in present_ids if cid not in chars_leaving]
         mission_state["present_ids"] = present_ids
         _sync_presence(character_states, present_ids)
 
+    turns_elapsed = int(mission_state.get("turns_elapsed") or 0)
+    closed = len(present_ids) == 0 or turns_elapsed >= 15
+
+    # Collect observer memories and scene hooks from R2 outputs
+    observer_memories = []
     hooks: list[SceneExitHook] = []
+    for out in r2_outputs:
+        if out.silent_observations:
+            observer_memories.extend(out.silent_observations)
+        if out.scene_suggestion and out.scene_suggestion.character and out.scene_suggestion.suggestion.strip():
+            hooks.append(out.scene_suggestion)
 
     _world_tick(player, world, mission_state, character_states, present_ids,
                 on_attempt=on_attempt)
@@ -777,7 +737,6 @@ def _run_live_turn(
         turn_id=turn_number,
         r1_output=r1,
         r2_outputs=r2_outputs,
-        r3_output=r3,
         player_input=body.new_player_input,
         player_name=player.character_name,
         characters_state=list(character_states.values()),
@@ -791,7 +750,6 @@ def _run_live_turn(
         player_input=body.new_player_input,
         r1_output=r1.model_dump(mode="json"),
         r2_outputs=[o.model_dump(mode="json") for o in r2_outputs],
-        r3_output=r3.model_dump(mode="json"),
         game_turn=game_turn.model_dump(mode="json"),
         model=llm_caller._current_model(),
         provider=llm_caller.available_provider(),

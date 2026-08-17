@@ -1,4 +1,4 @@
-"""Prompt builders for the 3 simulation LLM calls (Piece 3).
+"""Prompt builders for the simulation LLM calls.
 
 Each builder returns ``(system_prompt, user_payload)``. The payload is the
 exact JSON the LLM must reason over; the system prompt enforces the role
@@ -6,7 +6,6 @@ and output schema. The LLM returns ONLY JSON, validated in llm_caller.py.
 
 R1 Listener/Teacher   - judge the player's last message against the skill book
 R2 Character Brain    - one autonomous character reacts (run per character)
-R3 Narrator/Manager   - environment narration + mission chain progression
 """
 
 from __future__ import annotations
@@ -184,72 +183,6 @@ def build_cast_prompt(
                 }
             ]
         },
-    }
-    return system, user
-
-
-# ---------------------------------------------------------------------------
-# Scene Exit Decision (runs every turn in live scene)
-# ---------------------------------------------------------------------------
-
-def build_scene_exit_prompt(
-    mission: dict | None,
-    present_ids: list[str],
-    character_states: dict[str, Any],
-    conversation: list[dict[str, str]],
-    turns_elapsed: int,
-    new_player_input: str,
-) -> tuple[str, dict]:
-    """Decide whether the scene should end now.
-
-    Checks three things:
-    1. Does the player want to leave? (goodbye signals in input)
-    2. Has a character walked away? (trust crashed, suspicion maxed)
-    3. Has the conversation run its natural course? (mission done, awkward silence, turn limit)
-    """
-    live_stats = {}
-    for cid in present_ids:
-        s = character_states.get(cid, {})
-        live_stats[cid] = s.get("stats", {})
-
-    system = (
-        "You are the Scene Exit Judge for a live negotiation scene.\n"
-        "Your job: decide if the scene should end RIGHT NOW.\n"
-        "Check three signals:\n\n"
-        "1. PLAYER WANTS TO LEAVE: The player said goodbye, asked to leave, "
-        "or indicated they are done (e.g. 'I need to go', 'see you later', 'bye').\n\n"
-        "2. CHARACTER WALKED AWAY: A present character's stats indicate they "
-        "would leave — trust <= 2, or suspicion >= 8, or stress >= 9. "
-        "A character in that state would excuse themselves or walk out.\n\n"
-        "3. CONVERSATION NATURALLY ENDED: The mission objective was clearly "
-        "achieved or clearly failed, the conversation hit an awkward pause, "
-        "or the exchange has gone on long enough (turns_elapsed >= 12). "
-        "Don't end it too early — give the player room to work.\n\n"
-        "Rules:\n"
-        "- If ANY signal fires, set should_exit = true.\n"
-        "- characters_left: list the character ids who are leaving "
-        "(from a walked-away character, or empty if only the player is leaving).\n"
-        "- reason: one sentence explaining why.\n"
-        "- If nothing signals exit, set should_exit = false and leave the rest empty.\n"
-        "- Do NOT end the scene just because the turn count is low (< 8). "
-        "Only flag turn-based exit when turns_elapsed >= 12.\n"
-        "- Output ONLY JSON matching the schema exactly. No extra text, no markdown."
-    )
-    user = {
-        "task": "Decide if this scene should end.",
-        "present_characters": present_ids,
-        "live_stats": live_stats,
-        "turns_elapsed": turns_elapsed,
-        "new_player_input": new_player_input,
-        "recent_conversation": conversation[-10:] if conversation else [],
-    }
-    if mission:
-        user["mission_title"] = mission.get("title", "")
-        user["mission_objective"] = mission.get("objective", "")
-    user["output_schema"] = {
-        "should_exit": "bool",
-        "reason": "str - why the scene ends, or empty if it doesn't",
-        "characters_left": ["character ids who are walking out of the scene"],
     }
     return system, user
 
@@ -449,363 +382,8 @@ def build_feasibility_check_prompt(
 
 
 # ---------------------------------------------------------------------------
-# R0: Mission Architect (runs once per player plan)
-# ---------------------------------------------------------------------------
-
-def build_r0_prompt(
-    player: PlayerSetup,
-    world: WorldBible,
-    character_states: dict[str, Any] | None = None,
-    feasibility_path: list[dict[str, Any]] | None = None,
-) -> tuple[str, dict]:
-    if feasibility_path:
-        system = (
-            "You are the Mission Architect for a simulation world.\n"
-            "Your only job is to turn the WORLD GATE'S feasible path into a mission chain.\n"
-            "The World Gate already judged what is possible. You MUST respect its ruling.\n"
-            "Rules:\n"
-            f"- Build ONE mission per feasible step, in the exact order given. {len(feasibility_path)} steps -> {len(feasibility_path)} missions.\n"
-            "- The FIRST mission MUST be the first feasible step - it is what the player plays immediately.\n"
-            "- TWO-TIER PLANNING: only the FIRST mission is concrete and playable. Later missions are ROUGH OUTLINES - "
-            "the world is alive and dialogue may change what happens next, so do NOT over-specify the future.\n"
-            "  * The FIRST mission (id 1) gets FULL detail: location, objective, reward, exact characters, and "
-            "  win_conditions + fail_conditions (see stat rules below).\n"
-            "  * Every LATER mission (id 2+) is an OUTLINE: set detail_level 'outline', give it a title, a ONE-LINE "
-            "  description of its purpose, and the rough characters it will involve. Leave objective, reward, "
-            "  win_conditions and fail_conditions EMPTY/[] - they will be generated when the mission actually begins.\n"
-            "- 'characters' MUST only use ids from the world bible's autonomous_players. Never invent characters.\n"
-            "- EVERY mission MUST carry a 'reason': the world's access gate that makes this step necessary. "
-            "Quote the constraint plainly, e.g. \"You cannot meet Chief Yagami directly - he vets everyone. "
-            "Matsuda sees him daily and is the only accessible introduction.\"\n"
-            "- Read current_character_states: those are the LIVE stats/goals/current problems AFTER the cast was projected. "
-            "The first mission's objective must reference the current values (e.g. 'Raise Matsuda trust from 2 to 7').\n"
-            "- The FIRST mission MUST define win_conditions and fail_conditions, using the short stat names "
-            "(trust, familiarity, respect, suspicion, rapport, disclosure_level, stress) and bible character ids.\n"
-            "  * win_conditions: the stat values that mean the objective is achieved, e.g. "
-            "[{\"character\": \"MATSUDA\", \"stat\": \"trust\", \"min\": 5}]. Use 'min' for 'raise to at least X' "
-            "and 'max' for 'lower to at most X'. Base the target on the CURRENT value from current_character_states.\n"
-            "  * fail_conditions: the stat values that mean the character is frustrated enough to walk away or kick the "
-            "player out, e.g. [{\"character\": \"MATSUDA\", \"stat\": \"trust\", \"max\": 1}] or "
-            "[{\"character\": \"MATSUDA\", \"stat\": \"stress\", \"min\": 8}]. Set these so a badly-botched mission can actually fail.\n"
-            "- Do NOT write dialogue or narration. Missions are objectives, not story.\n"
-            "- Output ONLY JSON matching the schema exactly. No extra text, no markdown."
-        )
-    else:
-        system = (
-            "You are the Mission Architect for a simulation world.\n"
-            "Your only job is to turn the PLAYER'S OWN plan into a mission chain.\n"
-            "Rules:\n"
-            "- Break the player's own_plan into 4-5 missions that lead to their goal.\n"
-            "- TWO-TIER PLANNING: only the FIRST mission is concrete and playable. Later missions are ROUGH OUTLINES - "
-            "the world is alive and dialogue may change what happens next, so do NOT over-specify the future.\n"
-            "  * The FIRST mission (id 1) gets FULL detail: location, objective, reward, exact characters, and "
-            "  win_conditions + fail_conditions (see stat rules below). This is what the player plays immediately.\n"
-            "  * Every LATER mission (id 2+) is an OUTLINE: set detail_level 'outline', give it a title, a ONE-LINE "
-            "  description of its purpose, and the rough characters it will involve. Leave objective, reward, "
-            "  win_conditions and fail_conditions EMPTY/[] - they will be generated when the mission actually begins.\n"
-            "- 'characters' MUST only use ids from the world bible's autonomous_players. Never invent characters.\n"
-            "- Missions escalate: earlier missions are low-stakes (a single character), later ones raise the stakes.\n"
-            "- Read current_character_states: those are the LIVE stats/goals/current problems AFTER the cast was projected. "
-            "The first mission's objective must reference the current values (e.g. 'Raise Matsuda trust from 2 to 7').\n"
-            "- The FIRST mission MUST define win_conditions and fail_conditions, using the short stat names "
-            "(trust, familiarity, respect, suspicion, rapport, disclosure_level, stress) and bible character ids.\n"
-            "  * win_conditions: the stat values that mean the objective is achieved, e.g. "
-            "[{\"character\": \"MATSUDA\", \"stat\": \"trust\", \"min\": 5}]. Use 'min' for 'raise to at least X' "
-            "and 'max' for 'lower to at most X'. Base the target on the CURRENT value from current_character_states.\n"
-            "  * fail_conditions: the stat values that mean the character is frustrated enough to walk away or kick the "
-            "player out, e.g. [{\"character\": \"MATSUDA\", \"stat\": \"trust\", \"max\": 1}] or "
-            "[{\"character\": \"MATSUDA\", \"stat\": \"stress\", \"min\": 8}]. Set these so a badly-botched mission can actually fail.\n"
-            "- Do NOT write dialogue or narration. Missions are objectives, not story.\n"
-            "- Output ONLY JSON matching the schema exactly. No extra text, no markdown."
-        )
-    live = {}
-    if character_states:
-        for cid, s in character_states.items():
-            live[cid] = {
-                "goal": s.get("goal", ""),
-                "problem_solving_framework": s.get("problem_solving_framework", ""),
-                "current_problem": s.get("current_problem", ""),
-                "solution": s.get("solution", ""),
-                "stats": s.get("stats", {}),
-            }
-    user = {
-        "task": "Design a 4-5 mission chain that makes the player's plan playable.",
-        "player": player.model_dump(mode="json"),
-        "player_own_plan": player.own_plan,
-        "world_lore": world.model_dump(mode="json"),
-        "available_characters": [c.id for c in world.autonomous_players],
-        "current_character_states": live,
-        "output_schema": {
-            "mission_chain": [
-                {
-                    "id": "int - 1-based sequence number",
-                    "title": "str - short mission name",
-                    "description": "str - mission 1: what must happen in-world; later missions: ONE-LINE purpose only",
-                    "why_important": "str - how it serves the player's goal",
-                    "reason": "str - the world's access gate that makes this step necessary (e.g. 'You can't meet the Chief directly - he vets everyone; Matsuda sees him daily')",
-                    "detail_level": "str - 'detailed' for mission 1; 'outline' for every later mission",
-                    "location": "str - in-world place",
-                    "characters": ["bible character ids present in this mission"],
-                    "objective": "str - measurable goal e.g. 'Raise Matsuda trust from 2 to 7' (OUTLINE missions: empty string)",
-                    "reward": "str - what the player gains on success (OUTLINE missions: empty string)",
-                    "win_conditions": [
-                        {
-                            "character": "bible character id",
-                            "stat": "short stat name (trust/familiarity/respect/suspicion/rapport/disclosure_level/stress)",
-                            "min": "int - optional; stat must be >= this value to win",
-                            "max": "int - optional; stat must be <= this value to win"
-                        }
-                    ],
-                    "fail_conditions": [
-                        {
-                            "character": "bible character id",
-                            "stat": "short stat name",
-                            "min": "int - optional; stat reaching this means the character is overwhelmed",
-                            "max": "int - optional; stat dropping to this means the character gives up on you"
-                        }
-                    ],
-                }
-            ]
-        },
-    }
-    if feasibility_path:
-        user["feasibility_path"] = feasibility_path
-        user["task"] = "Build exactly ONE mission per feasibility step, in order. Mission 1 = the first step."
-    return system, user
-
-
-# ---------------------------------------------------------------------------
-# R8: Feasibility Gate / World Gate
-# ---------------------------------------------------------------------------
-
-def build_feasibility_prompt(
-    player: PlayerSetup,
-    world: WorldBible,
-    character_states: dict[str, Any] | None = None,
-    events: list[str] | None = None,
-) -> tuple[str, dict]:
-    """Judge the player's plan against the world's access rules.
-
-    The world controls who the player can realistically meet (each character's
-    ``access`` block: meetability / gate / where / grants). This agent decides
-    what is possible NOW, returns the blockers with in-world reasons, and the
-    ordered path of steps that ARE possible. R0 must build missions from it.
-    """
-    live = {}
-    if character_states:
-        for cid, s in character_states.items():
-            live[cid] = {
-                "goal": s.get("goal", ""),
-                "current_problem": s.get("current_problem", ""),
-                "solution": s.get("solution", ""),
-                "stats": s.get("stats", {}),
-            }
-    access = {}
-    for c in world.autonomous_players:
-        access[c.id] = {
-            "meetability": c.access.meetability,
-            "gate": c.access.gate,
-            "where": c.access.where,
-            "grants": c.access.grants,
-        }
-    system = (
-        "You are the World Gate for a simulation world. You know exactly what is and "
-        "isn't possible right now, because the world itself controls access.\n"
-        "Rules:\n"
-        "- Judge the player's plan against each character's access metadata (meetability, gate, where, grants). "
-        "You are the arbiter of what the player can actually DO in this world.\n"
-        "- feasible=false when any part of the plan is blocked by the world: a guarded/secluded character with no "
-        "unlocked gate, a character the player has no route to, an act the world forbids.\n"
-        "- blockers: name the impossible step, WHY it is blocked (quote the world's constraint in-world, e.g. "
-        "'Chief Yagami is extremely selective about who he meets - you have no introduction and don't know when he is free'), "
-        "and HOW to unlock it (e.g. 'get an introduction from a Task Force member who trusts you, like Matsuda').\n"
-        "- path: the ordered steps that ARE possible now, each reaching one target_character with a concrete "
-        "objective and the reason that step must happen first (the access gate). The first step is the only "
-        "thing the player can attempt immediately.\n"
-        "- reframe: a one-sentence rewrite of the player's plan into its feasible version, in the player's voice.\n"
-        "- Never invent characters outside the world bible. Never write dialogue or narration.\n"
-        "- Output ONLY JSON matching the schema exactly. No extra text, no markdown."
-    )
-    user = {
-        "task": "Judge whether the player's plan is possible in this world right now, and give the feasible path.",
-        "player": player.model_dump(mode="json"),
-        "player_own_plan": player.own_plan,
-        "world_lore": world.model_dump(mode="json"),
-        "character_access": access,
-        "current_character_states": live,
-        "recent_events": events or [],
-        "output_schema": {
-            "feasible": "bool - is the player's plan possible, at least partly, right now?",
-            "verdict": "str - one-line in-world verdict on the plan (e.g. 'You can't just walk up to Chief Yagami - he vets everyone.')",
-            "blockers": [
-                {
-                    "step": "str - the part of the plan that is blocked",
-                    "why_blocked": "str - the world's constraint, stated in-world",
-                    "how_to_unlock": "str - what would make it possible"
-                }
-            ],
-            "path": [
-                {
-                    "step": "str - concrete step name",
-                    "target_character": "str - bible character id this step reaches",
-                    "objective": "str - what must be achieved in this step",
-                    "reason": "str - the access gate that makes this step the next thing to do"
-                }
-            ],
-            "reframe": "str - the player's plan rewritten into its feasible version"
-        },
-    }
-    return system, user
-
-
-# ---------------------------------------------------------------------------
 # R1: Listener / Teacher
 # ---------------------------------------------------------------------------
-
-def build_flesh_prompt(
-    player: PlayerSetup,
-    world: WorldBible,
-    outline: dict[str, Any],
-    character_states: dict[str, Any],
-    commitments: list[dict[str, Any]],
-    events: list[str],
-) -> tuple[str, dict]:
-    """Turn a ROUGH OUTLINE mission into a fully playable one, right before the
-    player enters it, so the detail can use the CURRENT live world state."""
-    live = {}
-    for cid, s in (character_states or {}).items():
-        live[cid] = {
-            "goal": s.get("goal", ""),
-            "current_problem": s.get("current_problem", ""),
-            "solution": s.get("solution", ""),
-            "stats": s.get("stats", {}),
-        }
-    system = (
-        "You are the Mission Architect, fleshing out ONE mission the player is about to enter.\n"
-        "Rules:\n"
-        "- This mission was previously only an OUTLINE (title + rough purpose + rough cast). Fill in the details now, "
-        "using the CURRENT live stats and anything the characters promised (commitments) or did (world events).\n"
-        "- Keep the mission's title and purpose; make the concrete objective, reward, location and characters concrete.\n"
-        "- 'characters' MUST only use ids from the world bible's autonomous_players. Never invent characters.\n"
-        "- The objective MUST reference the current stat values (e.g. 'Raise Matsuda trust from 3 to 6').\n"
-        "- Define win_conditions and fail_conditions using the short stat names "
-        "(trust, familiarity, respect, suspicion, rapport, disclosure_level, stress):\n"
-        "  * win_conditions: e.g. [{\"character\": \"MATSUDA\", \"stat\": \"trust\", \"min\": 6}] - 'min' to raise, 'max' to lower.\n"
-        "  * fail_conditions: the point where the character walks away or kicks the player out, e.g. "
-        "[{\"character\": \"MATSUDA\", \"stat\": \"trust\", \"max\": 1}].\n"
-        "- If an open commitment from a character in this mission points at a specific action (e.g. 'I'll ask Chief "
-        "Soichiro'), make the objective about following through on that promise.\n"
-        "- Do NOT write dialogue or narration.\n"
-        "- Output ONLY JSON matching the schema exactly. No extra text, no markdown."
-    )
-    user = {
-        "task": "Flesh out this outline mission into a playable mission.",
-        "outline_mission": outline,
-        "player": player.model_dump(mode="json"),
-        "player_own_plan": player.own_plan,
-        "world_lore": world.model_dump(mode="json"),
-        "available_characters": [c.id for c in world.autonomous_players],
-        "current_character_states": live,
-        "commitments": commitments,
-        "world_events": events,
-        "output_schema": {
-            "mission_chain": [
-                {
-                    "id": "int - keep the outline's id",
-                    "title": "str - short mission name",
-                    "description": "str - what must happen in-world",
-                    "why_important": "str - how it serves the player's goal",
-                    "detail_level": "str - 'detailed'",
-                    "location": "str - in-world place",
-                    "characters": ["bible character ids present in this mission"],
-                    "objective": "str - measurable goal referencing current stats",
-                    "reward": "str - what the player gains on success",
-                    "win_conditions": [
-                        {
-                            "character": "bible character id",
-                            "stat": "short stat name",
-                            "min": "int - optional; stat must be >= this value to win",
-                            "max": "int - optional; stat must be <= this value to win"
-                        }
-                    ],
-                    "fail_conditions": [
-                        {
-                            "character": "bible character id",
-                            "stat": "short stat name",
-                            "min": "int - optional; stat reaching this means the character is overwhelmed",
-                            "max": "int - optional; stat dropping to this means the character gives up on you"
-                        }
-                    ],
-                }
-            ]
-        },
-    }
-    return system, user
-
-
-def build_reconcile_prompt(
-    player: PlayerSetup,
-    world: WorldBible,
-    outcome: str,
-    finished_conversation: list[dict[str, str]],
-    commitments: list[dict[str, Any]],
-    remaining_outline: list[dict[str, Any]],
-    events: list[str],
-) -> tuple[str, dict]:
-    """R6 (Scenario Director): after a mission ends, re-align the rough outline
-    with what actually happened - promises made in dialogue now shape the next
-    scenario instead of a rigid pre-fixed order."""
-    system = (
-        "You are the Scenario Director of a living world simulation.\n"
-        "Your job: keep the player's plan on track while letting dialogue change what happens next.\n"
-        "Rules:\n"
-        "- The player has a HIGH-LEVEL plan. The remaining missions are only rough outlines - mutable.\n"
-        "- The just-finished conversation may contain commitments characters made (see commitments, status 'open').\n"
-        "- Decide whether the NEXT outline mission should be revised to follow through on open commitments, "
-        "or stay as-is. Only revise when a commitment genuinely redirects the situation "
-        "(e.g. Matsuda promised to ask Chief Soichiro -> the next mission should involve Soichiro).\n"
-        "- Set material_shift=true ONLY when you changed the next mission because of something in dialogue. "
-        "If the outline already matches, keep it and material_shift=false.\n"
-        "- shift_summary: one player-facing sentence about what changed, e.g. "
-        "'Matsuda told you he will ask Chief Soichiro about you, so your next step centers on him.' "
-        "Empty if material_shift is false.\n"
-        "- Update every commitment's status: 'fulfilled' if the character followed through this mission, "
-        "'broken' if the character clearly abandoned it, otherwise keep 'open'. Return the full list.\n"
-        "- revised_next: the revised detail for the NEXT mission only (keep id). null to leave it unchanged.\n"
-        "- 'characters' in revised_next MUST only use ids from the world bible's autonomous_players.\n"
-        "- Output ONLY JSON matching the schema exactly. No extra text, no markdown."
-    )
-    user = {
-        "task": "Reconcile the remaining plan with what just happened.",
-        "player": player.model_dump(mode="json"),
-        "player_own_plan": player.own_plan,
-        "world_lore": world.model_dump(mode="json"),
-        "computed_outcome": outcome,
-        "available_characters": [c.id for c in world.autonomous_players],
-        "finished_conversation": finished_conversation,
-        "commitments": commitments,
-        "remaining_outline": remaining_outline,
-        "world_events": events,
-        "output_schema": {
-            "revised_next": {
-                "title": "str - revised name for the next mission (or unchanged)",
-                "description": "str - one-line purpose for the next mission",
-                "location": "str - where it happens",
-                "characters": ["bible character ids"]
-            },
-            "commitments": [
-                {
-                    "character": "bible character id",
-                    "target_character": "bible character id (or empty)",
-                    "about": "str - short promise summary",
-                    "status": "str - 'open' | 'fulfilled' | 'broken'"
-                }
-            ],
-            "material_shift": "bool - did dialogue actually change the next mission?",
-            "shift_summary": "str - one player-facing sentence; empty if no shift"
-        },
-    }
-    return system, user
 
 
 def build_world_tick_prompt(
@@ -1070,6 +648,14 @@ def build_r2_prompt(
         "- If this exchange changes your problem or solution, update current_problem and solution.\n"
         "- Never break character. Never mention you are AI.\n"
         "- Output ONLY JSON matching the schema exactly.\n"
+        "\nTOOL CALLS:\n"
+        "You have one tool: end_conversation.\n"
+        "- Call it when you are DONE talking: you have somewhere to be, you said what you needed to say, "
+        "the conversation has run its course, or the player indicated they are leaving.\n"
+        "- Do NOT call it just because stats are low — you might still be engaged even if you distrust the player.\n"
+        "- Leave tool_calls as an empty list [] if you want to keep talking.\n"
+        "- If you call end_conversation, your dialogue should naturally reflect it "
+        "(e.g. 'I need to get going', 'That's all I have for now', 'Good luck').\n"
         f"\nYOUR RELATIONSHIP STATE WITH THE PLAYER (derived from your live stats - your dialogue MUST match this):\n{readout}\n"
         f"{dynamics_block}"
         "\nYour dialogue's warmth, formality, openness and how much you reveal MUST be consistent with your relationship state. "
@@ -1080,6 +666,10 @@ def build_r2_prompt(
         "Before you speak, work through the reasoning chain below IN ORDER and write the result into the 'reasoning' field. "
         "relationship_state in your reasoning must restate the trust/familiarity/respect/suspicion/rapport/disclosure values "
         "above and what they mean for THIS exchange. Then write dialogue that is consistent with that relationship_state.\n"
+        "If other characters are present but staying silent this turn, note what you observe about each one in silent_observations "
+        "(e.g. 'Matsuda shifted uncomfortably and avoided eye contact'). Only note characters you can genuinely observe.\n"
+        "If during your dialogue you offered the player a concrete next step (e.g. 'I can introduce you to Chief Yagami'), "
+        "capture it in scene_suggestion. Do NOT invent offers you didn't make in your dialogue."
     )
     user = {
         "task": f"Act as {character.get('id')} and respond to the player for this turn.",
@@ -1100,6 +690,7 @@ def build_r2_prompt(
             "inner_thought": "str - private thought",
             "dialogue": "str - what you say out loud",
             "commitment_made": "null - normally null. Set it ONLY if this turn you explicitly promise the player a concrete future action (e.g. 'I'll talk to Chief Soichiro about you'). Format: {character: your id, target_character: the bible id you'll go to (empty if just the player), about: short promise summary, status: 'open'}. Never invent promises you do not actually make in your dialogue.",
+            "tool_calls": ["str - \"end_conversation\" if you are done talking, else empty list []"],
             "memory": "str - your REWRITTEN running memory: merge what you already remembered with what just happened now into one compact first-person summary (<~120 words); never deny world_events facts; if you leave, the summary must record it and why",
             "stat_changes": {
                 "trust": {"delta": "int", "reason": "str"},
@@ -1112,7 +703,14 @@ def build_r2_prompt(
             },
             "current_problem": "str - the problem you currently face (keep or update)",
             "solution": "str - your current solution to that problem (keep or update)",
-            "problem_solving_framework": "str - how you approach problems, or 'None'"
+            "problem_solving_framework": "str - how you approach problems, or 'None'",
+            "silent_observations": [
+                {
+                    "character": "bible id of a character who is present but staying silent this turn",
+                    "note": "str - one first-person line of what you noticed them doing/feeling while they stayed quiet"
+                }
+            ],
+            "scene_suggestion": "null - normally null. Set it ONLY if you offered the player a concrete next step in your dialogue (e.g. 'Follow me to Chief Soichiro's office', 'I can introduce you to Yagami'). Format: {character: your id, suggestion: what you offered, context: brief surrounding context}. Do NOT invent offers you didn't make."
         },
     }
     if addressed_to:
@@ -1154,153 +752,4 @@ def build_r2_prompt(
             "you may say yes, suggest conditions, or explain what you can do."
         )
 
-    return system, user
-
-
-# ---------------------------------------------------------------------------
-# R3: Narrator / Mission Manager
-# ---------------------------------------------------------------------------
-
-def build_r3_prompt(
-    world: WorldBible,
-    player: PlayerSetup,
-    scene_context: dict[str, Any],
-    r1_output: dict[str, Any],
-    r2_outputs: list[dict[str, Any]],
-    conversation: list[dict[str, str]],
-    speakers: list[str] | None = None,
-    silent: list[str] | None = None,
-) -> tuple[str, dict]:
-    system = (
-        "You are the Narrator for a living world simulation.\n"
-        "Rules:\n"
-        "- You are NOT a character. You describe the environment like a narrator.\n"
-        "- Explain where the player is, why they are here, and context they don't have.\n"
-        "- The scene ends ONLY when the conversation itself is over. Set scene_update.conversation_over=true "
-        "ONLY when the scene genuinely cannot continue, such as:\n"
-        "  * everyone in the room left or walked away,\n"
-        "  * a character kicked the player out / refused to keep talking / said goodbye and left,\n"
-        "  * the scene has dragged on with no progress (turns_in_scene is high) "
-        "and the characters naturally disengage and wrap up.\n"
-        "- When conversation_over=true, narrate the scene closing and set scene_update.characters_left.\n"
-        "- You do NOT create new story arcs or decide mission outcomes.\n"
-        "- The current scene and its characters are defined by the player's action. Do not add characters who are not present.\n"
-        "- The Scene Director already set who spoke this turn (speakers) and who stayed quiet (silent). "
-        "Narrate the scene naturally around that.\n"
-        "- observer_memories: for EVERY character in the 'silent' list, write ONE compact first-person note "
-        "recording what they observed this turn. This note is appended to their memory.\n"
-        "- scene_hooks: if any character offered a concrete next step (e.g. 'follow me to X', 'I can introduce you to Y'), "
-        "capture it here. These become clickable suggestions for the player's next action.\n"
-        "- Output ONLY JSON matching the schema exactly."
-    )
-    user = {
-        "task": "Narrate this turn. The scene ends only on social closure, never on stats.",
-        "world_lore": world.model_dump(mode="json"),
-        "player": player.model_dump(mode="json"),
-        "scene_context": scene_context,
-        "request_1_output": r1_output,
-        "request_2_outputs": r2_outputs,
-        "full_conversation_this_scene": conversation,
-        "speakers": speakers or [],
-        "silent": silent or [],
-        "output_schema": {
-            "narration": "str - environment description",
-            "where": "str - location",
-            "why_here": "str - why the player is here",
-            "scene_update": {
-                "characters_entered": ["ids"],
-                "characters_left": ["ids who departed this turn"],
-                "new_characters_present_for_next_turn": ["ids"],
-                "conversation_over": "bool - true ONLY when the conversation itself is over",
-                "ending": "str - why it ended, e.g. 'everyone_left' | 'kicked_out' | 'character_walked_away'. Empty when conversation_over is false."
-            },
-            "observer_memories": [
-                {
-                    "character": "bible id of a silent character",
-                    "note": "str - one first-person line of what they observed this turn"
-                }
-            ],
-            "scene_hooks": [
-                {
-                    "character": "bible id of the NPC who made the suggestion",
-                    "suggestion": "str - the concrete next step they offered",
-                    "context": "str - surrounding context"
-                }
-            ]
-        },
-    }
-    return system, user
-
-
-# ---------------------------------------------------------------------------
-# R4: Mission End Director - what a won/lost mission MEANS for the world
-# ---------------------------------------------------------------------------
-
-def build_r4_prompt(
-    outcome: str,
-    mission_context: dict[str, Any],
-    culprit_states: dict[str, Any],
-    r2_outputs: list[dict[str, Any]],
-    player: PlayerSetup,
-    world: WorldBible,
-    conversation: list[dict[str, str]],
-) -> tuple[str, dict]:
-    system = (
-        "You are the Mission End Director for a living world simulation.\n"
-        "Your job: decide what the END of this mission means for the world and for the player. "
-        "You run ONLY when the mission is definitively won or failed - never while it is ongoing.\n"
-        "Rules:\n"
-        "- outcome in your payload is already decided mechanically by the Mission Manager. NEVER change it.\n"
-        "- You speak in the voice of the WORLD, not the player and not a narrator - you state consequences plainly.\n"
-        "- CONSEQUENCES ARE DRIVEN BY THE CHARACTER'S LIVE STATS (culprit_states). For a FAILED mission:\n"
-        "  * If suspicion >= 6 AND trust <= 2 -> severity 'harsh'. The character does not just leave: they act on it, "
-        "e.g. MATSUDA directly reports the player to L. Emit a world_effect that raises the authority figure's "
-        "suspicion of the player (character 'L', stat 'suspicion', positive delta) so the damage follows the player "
-        "into future plans.\n"
-        "  * Otherwise -> severity 'mild'. The character leaves politely ('ok, no problem, I'll go') with no further "
-        "consequence, though the failed relationship is still remembered.\n"
-        "- For a WON mission: the mission's reward is delivered - the character gives up the useful information "
-        "the mission promised. Emit world_effects if the world genuinely changes (e.g. the character now trusts you "
-        "more or shares a secret that raises their disclosure).\n"
-        "- debrief.message is a short note DIRECTLY to the player about what just happened and what it means, e.g. "
-        "'You failed the mission. The rest of the chain no longer makes sense - what will you do now?' "
-        "Set debrief.location to where the player finds themselves now and debrief.who_is_around to the ids of "
-        "characters in that place (the failed character is NOT among them - they already left).\n"
-        "- memory is the affected character's REWRITTEN running memory: merge their prior memory (see culprit_states) "
-        "with what they just did into ONE compact first-person summary (e.g. 'I already told L about this player - I "
-        "won't trust them, but he keeps trying.'). It REPLACES the old memory - keep everything important, under ~120 words.\n"
-        "- event_log is ONE line for the world events log (e.g. 'M1 lost - MATSUDA reported the player to L.'). It is a "
-        "PERMANENT, undeniable fact that characters must treat as true from now on.\n"
-        "- Output ONLY JSON matching the schema exactly. No extra text, no markdown."
-    )
-    user = {
-        "task": f"Resolve the consequences of the {outcome.upper()} mission.",
-        "computed_outcome": outcome,
-        "mission_context": mission_context,
-        "culprit_states": culprit_states,
-        "request_2_outputs": r2_outputs,
-        "player": player.model_dump(mode="json"),
-        "world_lore": world.model_dump(mode="json"),
-        "full_conversation_this_mission": conversation,
-        "output_schema": {
-            "severity": "str - 'mild' or 'harsh' (harsh only when a character's suspicion >= 6 and trust <= 2)",
-            "action": "str - what the character actually does now (leaves politely / reports you to L / shares info on win)",
-            "character": "str - the affected character's bible id (who memory is about)",
-            "world_effects": [
-                {
-                    "character": "bible character id whose live stats change permanently",
-                    "stat": "short stat name (trust/familiarity/respect/suspicion/rapport/disclosure_level/stress)",
-                    "delta": "int - permanent change (small, e.g. +-2)",
-                    "reason": "str - why"
-                }
-            ],
-            "debrief": {
-                "message": "str - direct note to the player about what happened and what it means",
-                "location": "str - where the player is now",
-                "who_is_around": ["bible character ids still present nearby (NOT the one who left)"]
-            },
-            "memory": "str - the affected character's REWRITTEN running memory (prior memory + what they just did, merged; replaces the old memory)",
-            "event_log": "str - one line for the permanent world events log"
-        },
-    }
     return system, user

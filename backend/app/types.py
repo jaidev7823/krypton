@@ -207,6 +207,19 @@ class Commitment(PermissiveModel):
     status: str = "open"  # open | fulfilled | broken
 
 
+class SceneExitHook(PermissiveModel):
+    """An NPC suggestion extracted from scene exit dialogue."""
+    character: str = ""
+    suggestion: str = ""
+    context: str = ""
+
+
+class ObserverMemory(PermissiveModel):
+    """One line a present-but-silent character takes in while others speak."""
+    character: str = ""
+    note: str = ""
+
+
 class CharacterBrainOutput(PermissiveModel):
     character_id: str
     reasoning: CharacterReasoning = Field(default_factory=CharacterReasoning)
@@ -215,9 +228,12 @@ class CharacterBrainOutput(PermissiveModel):
     memory: str = ""
     stat_changes: StatChanges = Field(default_factory=StatChanges)
     commitment_made: Optional[Commitment] = None
+    tool_calls: list[str] = Field(default_factory=list)
     current_problem: str = ""
     solution: str = ""
     problem_solving_framework: str = ""
+    silent_observations: list[ObserverMemory] = Field(default_factory=list)
+    scene_suggestion: Optional[SceneExitHook] = None
 
 
 class SceneDirectionOutput(PermissiveModel):
@@ -236,13 +252,6 @@ class ActionFeasibility(PermissiveModel):
     feasible: bool = True
     reason: str = ""
     suggestions: list[str] = Field(default_factory=list)
-
-
-class SceneExitHook(PermissiveModel):
-    """An NPC suggestion extracted from scene exit dialogue."""
-    character: str = ""
-    suggestion: str = ""
-    context: str = ""
 
 
 class MissionObjective(PermissiveModel):
@@ -274,13 +283,6 @@ class MissionDebrief(PermissiveModel):
     who_is_around: list[str] = Field(default_factory=list)
 
 
-class SceneExitDecision(PermissiveModel):
-    """Should this scene end now?"""
-    should_exit: bool = False
-    reason: str = ""
-    characters_left: list[str] = Field(default_factory=list)
-
-
 class NextMission(PermissiveModel):
     title: str = ""
     why_important: str = ""
@@ -299,21 +301,6 @@ class SceneUpdate(PermissiveModel):
     new_characters_present_for_next_turn: list[str] = Field(default_factory=list)
     conversation_over: bool = False
     ending: str = ""
-
-
-class ObserverMemory(PermissiveModel):
-    """One line a present-but-silent character takes in while others speak."""
-    character: str = ""
-    note: str = ""
-
-
-class NarratorOutput(PermissiveModel):
-    narration: str = ""
-    where: str = ""
-    why_here: str = ""
-    scene_update: SceneUpdate = Field(default_factory=SceneUpdate)
-    observer_memories: list[ObserverMemory] = Field(default_factory=list)
-    scene_hooks: list[SceneExitHook] = Field(default_factory=list)
 
 
 class WorldEffect(PermissiveModel):
