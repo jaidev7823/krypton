@@ -412,9 +412,9 @@ def test_profile_init():
     p = row.mission_state.get("player_profile", {})
     check(isinstance(p, dict), "profile is a dict")
     check(p.get("status") == "Student", "initial status is Student")
-    check(any("Class 3B" in g for g in (p.get("can_go") or [])),
-          "can_go includes starting position Class 3B")
     check(p.get("cash") == 50000, "initial cash is 50000")
+    check(p.get("resources") == [], "initial resources empty")
+    check(p.get("knowledge") == [], "initial knowledge empty")
 
 
 def test_profile_in_turn_response():
@@ -439,11 +439,11 @@ def test_profile_update_on_turn():
     check(r2.player_profile.status == "Student", "profile status preserved")
 
 
-def test_profile_access_denied():
-    """If R2 denies access, the profile's cannot_go gets updated."""
+def test_profile_updates():
+    """If R2 outputs profile_updates, the profile gets updated."""
     original_call_json = llm_caller.call_json
 
-    def _fake_with_denial(system, user, schema, agent="", on_attempt=None):
+    def _fake_with_updates(system, user, schema, agent="", on_attempt=None):
         if agent == "listener":
             return SkillFeedback(did_use_concept=False)
         if agent.startswith("brain:"):
@@ -460,7 +460,7 @@ def test_profile_access_denied():
                 inner_thought="thinking",
                 tool_calls=[],
                 stat_changes=StatChanges(),
-                access_denied=[{"kind": "location", "target": "Chief's Office", "reason": "need direct invitation"}],
+                profile_updates={"resources": ["NPA badge"], "knowledge": ["L is in Tokyo"]},
             )
         if agent == "feasibility_check":
             return ActionFeasibility(feasible=True, reason="action ok")
@@ -473,7 +473,7 @@ def test_profile_access_denied():
             return None
         raise AssertionError(f"unexpected agent {agent}")
 
-    llm_caller.call_json = _fake_with_denial
+    llm_caller.call_json = _fake_with_updates
     try:
         r = main._run_turn(TurnRequest(player_setup=json.loads(json.dumps(setup_json())),
                                        new_player_input="", action="setup",
@@ -484,9 +484,10 @@ def test_profile_access_denied():
         r2 = main._run_turn(TurnRequest(session_id=sid, new_player_input="Hello"))
         row = db_module.get_session(sid)
         p = row.mission_state.get("player_profile", {})
-        cannot = p.get("cannot_go") or []
-        check(any("Chief" in c for c in cannot),
-              "profile cannot_go includes denied location")
+        check("NPA badge" in (p.get("resources") or []),
+              "profile resources includes NPA badge from R2")
+        check("L is in Tokyo" in (p.get("knowledge") or []),
+              "profile knowledge includes fact from R2")
     finally:
         llm_caller.call_json = original_call_json
 
@@ -496,5 +497,5 @@ if __name__ == "__main__":
     test_profile_init()
     test_profile_in_turn_response()
     test_profile_update_on_turn()
-    test_profile_access_denied()
+    test_profile_updates()
     print("\nALL PROFILE CHECKS PASSED")

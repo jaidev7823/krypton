@@ -155,33 +155,15 @@ class PlayerSetup(PermissiveModel):
 
 
 class PlayerProfile(PermissiveModel):
-    """Living document tracking who the player IS, what they HAVE, what they KNOW,
-    and what they've LEARNED. Updated every turn. Used by feasibility check,
-    coach, and displayed to the player."""
+    """Living document tracking who the player IS, what they HAVE,
+    what they KNOW, and what they've LEARNED. Updated every turn."""
 
-    # --- World State ---
-    status: str = ""              # "Student", "NPA Intern", "Private Investigator"
-    affiliation: str = ""         # "None", "NPA", "Task Force"
+    status: str = ""              # "Student", "NPA Intern", "Wanted"
     cash: int = 0
-    items: list[str] = Field(default_factory=list)
-    documents: list[str] = Field(default_factory=list)
-    debts: list[str] = Field(default_factory=list)
-    obligations: list[str] = Field(default_factory=list)
-    exposure: list[str] = Field(default_factory=list)
-    can_go: list[str] = Field(default_factory=list)
-    cannot_go: list[str] = Field(default_factory=list)
-    can_meet: list[str] = Field(default_factory=list)
-    cannot_meet: list[str] = Field(default_factory=list)
+    resources: list[str] = Field(default_factory=list)
     knowledge: list[str] = Field(default_factory=list)
-    connections: list[str] = Field(default_factory=list)
-    public_perception: str = "unknown student"
-    faction_views: dict[str, str] = Field(default_factory=dict)
-
-    # --- Learning Journey ---
+    reputation: str = "unknown student"
     concepts_used: dict[str, dict] = Field(default_factory=dict)
-    concept_history: list[dict] = Field(default_factory=list)
-    missed_opportunities: list[dict] = Field(default_factory=list)
-    growth_markers: list[str] = Field(default_factory=list)
 
 
 # ---------------------------------------------------------------------------
@@ -267,8 +249,6 @@ class CharacterBrainOutput(PermissiveModel):
     silent_observations: list[ObserverMemory] = Field(default_factory=list)
     scene_suggestion: Optional[SceneExitHook] = None
     profile_updates: dict[str, Any] = Field(default_factory=dict)
-    access_granted: list[dict[str, str]] = Field(default_factory=list)
-    access_denied: list[dict[str, str]] = Field(default_factory=list)
 
 
 class SceneDirectionOutput(PermissiveModel):

@@ -340,24 +340,20 @@ def build_feasibility_check_prompt(
     system = (
         "You are the Feasibility Guide for a living world simulation.\n"
         "Your job: tell the player if their action is realistic RIGHT NOW.\n"
-        "You have the PLAYER PROFILE — a structured record of who they are, "
-        "what they have, where they can go, who they can meet, and what they know.\n"
-        "Use this profile as your PRIMARY source. Do NOT rely on general knowledge.\n"
+        "You have the PLAYER PROFILE — status, cash, resources, knowledge, reputation.\n"
+        "You also have CHARACTER ACCESS data — meetability, gates, and grants for each NPC.\n"
+        "Use these as your PRIMARY sources. Do NOT rely on general knowledge.\n"
         "\nRules:\n"
-        "1. Check can_go/cannot_go for location access. If the player's action involves "
-        "going somewhere, it MUST be in can_go. If it's in cannot_go, it's blocked.\n"
-        "2. Check can_meet/cannot_meet for character access. If the player wants to meet "
-        "someone, they MUST be in can_meet. If they're in cannot_meet, explain why.\n"
-        "3. Check knowledge for information-dependent actions. If the player needs to "
-        "know something (e.g. what L looks like) and it's NOT in knowledge, block it.\n"
-        "4. Check items/documents for equipment-dependent actions. If the player needs "
-        "a badge, warrant, etc. and doesn't have it, block it.\n"
-        "5. If an open commitment exists (NPC promised to do something), the player acting on "
+        "1. Check character_access for meeting NPCs. If meetability is 'guarded' or 'secluded', "
+        "the player needs to meet the gate condition. If 'open', they can meet freely.\n"
+        "2. Check resources for equipment-dependent actions. If the player needs a badge, "
+        "warrant, etc. and doesn't have it in resources, block it.\n"
+        "3. Check knowledge for information-dependent actions. If the player needs to know "
+        "something and it's NOT in knowledge, block it.\n"
+        "4. If an open commitment exists (NPC promised to do something), the player acting on "
         "that promise is AUTOMATICALLY FEASIBLE.\n"
-        "6. DEFAULT TO YES when the profile doesn't explicitly block the action.\n"
-        "7. When blocked, suggest 1-3 actions the player CAN do based on their current "
-        "profile (can_go, can_meet, knowledge, items).\n"
-        "8. NEVER reject an action that the profile says is allowed.\n"
+        "5. DEFAULT TO YES when there's no clear barrier.\n"
+        "6. When blocked, suggest 1-3 actions the player CAN do based on their profile.\n"
         "- Output ONLY JSON matching the schema exactly."
     )
     access_metadata = []
@@ -688,18 +684,17 @@ def build_r2_prompt(
         "If during your dialogue you offered the player a concrete next step (e.g. 'I can introduce you to Chief Yagami'), "
         "capture it in scene_suggestion. Do NOT invent offers you didn't make in your dialogue.\n"
         "\nPROFILE AWARENESS:\n"
-        "You can see the player's profile below — their status, what they have, where they can go, "
-        "who they can meet, and what they know. Use it to understand their current position in the world.\n"
+        "You can see the player's profile — their status, cash, resources, knowledge, "
+        "and reputation. Use it to understand their current position in the world.\n"
         "\nPROFILE UPDATES:\n"
-        "If during your dialogue you grant the player something (offer an invitation, give an item, "
-        "reveal information, introduce them to someone), output it in profile_updates and access_granted.\n"
-        "If you deny them something (refuse access, explain they can't do something), output it in access_denied.\n"
+        "If during your dialogue you give the player something (a resource, information, "
+        "a status change), output it in profile_updates.\n"
         "Examples:\n"
-        '- You say "Follow me to the cafeteria" → access_granted: [{kind: "location", target: "NPA Cafeteria", reason: "Matsuda invited you"}]\n'
-        '- You say "You can\'t just walk into the Chief\'s office" → access_denied: [{kind: "location", target: "Chief\'s office", reason: "need direct invitation"}]\n'
-        '- You say "I\'ll introduce you to Chief Yagami" → profile_updates: {can_meet: ["SOICHIRO - Matsuda will introduce"]}, access_granted: [{kind: "character", target: "SOICHIRO", reason: "Matsuda will introduce you"}]\n'
-        '- You say "L doesn\'t just wander around" → access_denied: [{kind: "character", target: "L", reason: "L doesn\'t wander the streets, you need an introduction"}]\n'
-        "Only output profile_updates, access_granted, access_denied if you ACTUALLY say something that grants or denies access in your dialogue."
+        '- You give them a badge → profile_updates: {resources: ["NPA badge"]}\n'
+        '- You reveal a secret → profile_updates: {knowledge: ["L is investigating Kira"]}\n'
+        '- You say "you\'re hired" → profile_updates: {status: "NPA Intern"}\n'
+        '- You say "you owe me" → profile_updates: {resources: ["favor from Matsuda"]}\n'
+        "Only output profile_updates if you ACTUALLY say something that gives them something."
     )
     user = {
         "task": f"Act as {character.get('id')} and respond to the player for this turn.",
@@ -743,22 +738,12 @@ def build_r2_prompt(
             ],
             "scene_suggestion": "null - normally null. Set it ONLY if you offered the player a concrete next step in your dialogue (e.g. 'Follow me to Chief Soichiro's office', 'I can introduce you to Yagami'). Format: {character: your id, suggestion: what you offered, context: brief surrounding context}. Do NOT invent offers you didn't make.",
             "profile_updates": {
-                "status": "str - ONLY set if you changed the player's status (e.g. 'you're hired')",
-                "affiliation": "str - ONLY set if you changed their organizational membership",
-                "cash": "int - ONLY set if you gave/ took money",
-                "items": ["ONLY set if you gave them a physical item"],
-                "documents": ["ONLY set if you gave them a document"],
+                "status": "str - ONLY set if you changed the player's status",
+                "cash": "int - ONLY set if you gave or took money",
+                "resources": ["ONLY set if you gave them something (items, documents, badges, favors)"],
                 "knowledge": ["ONLY set if you revealed a fact they didn't know"],
-                "connections": ["ONLY set if you described your relationship with them"],
-                "public_perception": "str - ONLY set if you changed how the public sees them",
-                "faction_views.NPA": "str - ONLY set if you changed how a specific group sees them"
+                "reputation": "str - ONLY set if you changed how people see them"
             },
-            "access_granted": [
-                {"kind": "location|character|knowledge", "target": "what was granted", "reason": "why"}
-            ],
-            "access_denied": [
-                {"kind": "location|character|knowledge", "target": "what was denied", "reason": "why"}
-            ]
         },
     }
     if addressed_to:

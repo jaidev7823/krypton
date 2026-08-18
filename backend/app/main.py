@@ -602,15 +602,10 @@ def _run_turn(body: TurnRequest) -> TurnResponse:
 
 def _init_player_profile(player: PlayerSetup) -> dict:
     """Create the initial player profile from setup data."""
-    bg = (player.background or "").lower()
-    starting = player.starting_position or ""
-    can_go = [f"{starting} - starting position"] if starting else []
     return PlayerProfile(
         status="Student",
-        affiliation="None",
         cash=50000,
-        can_go=can_go,
-        public_perception=f"unknown {bg}" if bg else "unknown student",
+        reputation=f"unknown {player.background}" if player.background else "unknown student",
     ).model_dump(mode="json")
 
 
@@ -625,11 +620,10 @@ def _sync_presence(character_states: dict, present_ids: list[str]) -> None:
 
 def _apply_profile_updates(mission_state: dict, r1: SkillFeedback,
                            r2_outputs: list[CharacterBrainOutput]) -> None:
-    """Merge R1 learning data and R2 profile/access updates into the player profile."""
+    """Merge R1 learning data and R2 profile updates into the player profile."""
     profile = mission_state.setdefault("player_profile", _init_player_profile(PlayerSetup()))
 
-    # --- R1 → Learning Journey ---
-    turn_num = mission_state.get("turns_elapsed", 0)
+    # --- R1 → concepts_used proficiency ---
     if r1.concepts_used:
         concepts = profile.setdefault("concepts_used", {})
         for c in r1.concepts_used:
@@ -645,27 +639,15 @@ def _apply_profile_updates(mission_state: dict, r1: SkillFeedback,
                 entry["proficiency"] = "learning"
             else:
                 entry["proficiency"] = "novice"
-        profile.setdefault("concept_history", []).append({
-            "turn": turn_num,
-            "concept": ", ".join(r1.concepts_used),
-            "context": r1.player_intent or "",
-            "quality": r1.how_properly_used or "",
-        })
 
     if r1.missed_concepts:
         concepts = profile.setdefault("concepts_used", {})
         for c in r1.missed_concepts:
             concepts.setdefault(c, {"used": 0, "good": 0, "missed": 0, "proficiency": "novice"})["missed"] += 1
-        profile.setdefault("missed_opportunities", []).append({
-            "turn": turn_num,
-            "concept": ", ".join(r1.missed_concepts),
-            "context": r1.missed_context or "",
-        })
 
-    # --- R2 → World State ---
-    list_keys = {"items", "documents", "debts", "obligations", "exposure",
-                 "can_go", "cannot_go", "can_meet", "cannot_meet", "knowledge", "connections"}
-    scalar_keys = {"status", "affiliation", "cash", "public_perception"}
+    # --- R2 → status, cash, resources, knowledge, reputation ---
+    list_keys = {"resources", "knowledge"}
+    scalar_keys = {"status", "cash", "reputation"}
 
     for out in r2_outputs:
         for k, v in (out.profile_updates or {}).items():
@@ -677,25 +659,6 @@ def _apply_profile_updates(mission_state: dict, r1: SkillFeedback,
                         lst.append(item)
             elif k in scalar_keys:
                 profile[k] = v
-            elif k.startswith("faction_views."):
-                faction = k.split(".", 1)[1]
-                profile.setdefault("faction_views", {})[faction] = v
-
-        for grant in (out.access_granted or []):
-            kind = grant.get("kind", "knowledge")
-            key = {"location": "can_go", "character": "can_meet"}.get(kind, "knowledge")
-            entry = f"{grant.get('target', '')} - {grant.get('reason', '')}"
-            lst = profile.setdefault(key, [])
-            if entry not in lst:
-                lst.append(entry)
-
-        for denial in (out.access_denied or []):
-            kind = denial.get("kind", "location")
-            key = {"location": "cannot_go", "character": "cannot_meet"}.get(kind, "cannot_go")
-            entry = f"{denial.get('target', '')} - {denial.get('reason', '')}"
-            lst = profile.setdefault(key, [])
-            if entry not in lst:
-                lst.append(entry)
 
 
 def _run_live_turn(

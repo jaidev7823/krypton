@@ -10,25 +10,11 @@ export interface SkillFeedback {
 
 export interface PlayerProfile {
   status?: string;
-  affiliation?: string;
   cash?: number;
-  items?: string[];
-  documents?: string[];
-  debts?: string[];
-  obligations?: string[];
-  exposure?: string[];
-  can_go?: string[];
-  cannot_go?: string[];
-  can_meet?: string[];
-  cannot_meet?: string[];
+  resources?: string[];
   knowledge?: string[];
-  connections?: string[];
-  public_perception?: string;
-  faction_views?: Record<string, string>;
+  reputation?: string;
   concepts_used?: Record<string, { used: number; good: number; missed: number; proficiency: string }>;
-  concept_history?: { turn: number; concept: string; context: string; quality: string }[];
-  missed_opportunities?: { turn: number; concept: string; context: string }[];
-  growth_markers?: string[];
 }
 
 export interface StatChange {
