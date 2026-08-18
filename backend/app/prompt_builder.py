@@ -340,32 +340,43 @@ def build_feasibility_check_prompt(
     system = (
         "You are the Feasibility Guide for a living world simulation.\n"
         "Your job: tell the player if their action is realistic RIGHT NOW.\n"
-        "You have the PLAYER PROFILE — status, cash, resources, knowledge, reputation.\n"
-        "You also have CHARACTER ACCESS data — meetability, gates, and grants for each NPC.\n"
+        "You have the PLAYER PROFILE, LOCATION GATE RULES, and CHARACTER INTERACTION GATES.\n"
         "Use these as your PRIMARY sources. Do NOT rely on general knowledge.\n"
         "\nRules:\n"
-        "1. Check character_access for meeting NPCs. If meetability is 'guarded' or 'secluded', "
-        "the player needs to meet the gate condition. If 'open', they can meet freely.\n"
-        "2. Check resources for equipment-dependent actions. If the player needs a badge, "
-        "warrant, etc. and doesn't have it in resources, block it.\n"
-        "3. Check knowledge for information-dependent actions. If the player needs to know "
-        "something and it's NOT in knowledge, block it.\n"
-        "4. If an open commitment exists (NPC promised to do something), the player acting on "
-        "that promise is AUTOMATICALLY FEASIBLE.\n"
-        "5. DEFAULT TO YES when there's no clear barrier.\n"
-        "6. When blocked, suggest 1-3 actions the player CAN do based on their profile.\n"
+        "1. For location access: check the location's gatekeeper_prompt in location_access. "
+        "Evaluate the player's identity, resources, and relationships against the gate.\n"
+        "2. For meeting characters: check the character's interaction_gatekeeper_prompt. "
+        "Some characters are physically unreachable (e.g. L, Ryuk) without specific conditions.\n"
+        "3. Check resources for equipment-dependent actions.\n"
+        "4. Check knowledge for information-dependent actions.\n"
+        "5. If an open commitment exists, the player acting on it is AUTOMATICALLY FEASIBLE.\n"
+        "6. DEFAULT TO YES when there's no clear barrier.\n"
+        "7. When blocked, suggest 1-3 actions the player CAN do.\n"
         "- Output ONLY JSON matching the schema exactly."
     )
-    access_metadata = []
+    location_access = []
+    for loc in (world.model_dump().get("locations") or []):
+        location_access.append({
+            "id": loc.get("id", ""),
+            "name": loc.get("name", ""),
+            "parent_location": loc.get("parent_location_id"),
+            "gatekeeper_prompt": loc.get("gatekeeper_prompt", ""),
+        })
+    character_access = []
     for char in world.autonomous_players:
-        access_metadata.append({
+        char_data = {
             "id": char.id,
             "name": char.canon_name,
-            "meetability": char.access.meetability,
-            "gate": char.access.gate,
-            "where": char.access.where,
-            "grants": char.access.grants,
-        })
+            "role": char.role,
+            "current_location": getattr(char, "current_location", ""),
+            "interaction_gatekeeper_prompt": getattr(char, "interaction_gatekeeper_prompt", ""),
+        }
+        if char.access.meetability or char.access.gate:
+            char_data["meetability"] = char.access.meetability
+            char_data["gate"] = char.access.gate
+            char_data["where"] = char.access.where
+            char_data["grants"] = char.access.grants
+        character_access.append(char_data)
     user = {
         "task": "Check if this action is feasible right now.",
         "player_action": action_text,
@@ -376,7 +387,8 @@ def build_feasibility_check_prompt(
         },
         "world_name": world.world.name,
         "world_rules": world.world.rules,
-        "character_access": access_metadata,
+        "location_access": location_access,
+        "character_access": character_access,
         "open_commitments": [c for c in (commitments or []) if c.get("status") == "open"],
         "recent_events": events[-5:] if events else [],
         "output_schema": {
