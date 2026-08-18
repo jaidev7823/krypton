@@ -11,6 +11,7 @@ import type {
   GameTurnCharacter,
   Mission,
   MissionDebrief,
+  PlayerProfile,
   PlayerSetup,
   SceneExitHook,
   Skill,
@@ -32,6 +33,7 @@ interface GameStateStore {
   strategicPlan: string;
   mission: Mission | null;
   debrief: MissionDebrief | null;
+  playerProfile: PlayerProfile | null;
   isLoading: boolean;
   error: string | null;
   audioMuted: boolean;
@@ -41,6 +43,7 @@ interface GameStateStore {
   coachOpen: boolean;
   coachMessages: CoachMessage[];
   coachLoading: boolean;
+  profileOpen: boolean;
 
   setupPlayer: (p: PlayerSetup, planText: string) => Promise<void>;
   declareAction: (actionText: string) => Promise<void>;
@@ -50,6 +53,7 @@ interface GameStateStore {
   openCoach: (skill: Skill | null) => void;
   toggleCoach: () => void;
   askCoach: (text: string) => Promise<void>;
+  toggleProfile: () => void;
 }
 
 let entryId = 0;
@@ -120,6 +124,7 @@ function applyTurn(set: (fn: (s: GameStateStore) => Partial<GameStateStore>) => 
       strategicPlan: res.strategic_plan ?? s.strategicPlan,
       mission: res.mission ?? s.mission,
       debrief: res.debrief ?? (res.game_state === "world" ? null : s.debrief),
+      playerProfile: res.player_profile ?? s.playerProfile,
       notices: newNotices.length > 0 ? [...newNotices, ...s.notices].slice(0, 30) : s.notices,
       coachSkill: res.turn.coach ?? null,
       isLoading: false,
@@ -141,6 +146,7 @@ export const useGameStore = create<GameStateStore>((set, get) => ({
   strategicPlan: "",
   mission: null,
   debrief: null,
+  playerProfile: null,
   isLoading: false,
   error: null,
   audioMuted: false,
@@ -150,6 +156,7 @@ export const useGameStore = create<GameStateStore>((set, get) => ({
   coachOpen: false,
   coachMessages: [],
   coachLoading: false,
+  profileOpen: false,
 
   setupPlayer: async (p, planText) => {
     set({ isLoading: true, error: null, player: p, strategicPlan: planText });
@@ -210,6 +217,7 @@ export const useGameStore = create<GameStateStore>((set, get) => ({
   toggleAudio: () => set({ audioMuted: !get().audioMuted }),
   openCoach: (skill) => set({ coachSkill: skill }),
   toggleCoach: () => set({ coachOpen: !get().coachOpen }),
+  toggleProfile: () => set({ profileOpen: !get().profileOpen }),
 
   askCoach: async (text) => {
     const { sessionId, coachMessages } = get();

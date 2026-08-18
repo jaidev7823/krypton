@@ -8,15 +8,18 @@ import { ActivitySidebar } from "./ActivitySidebar";
 import { CharacterInspectorDrawer } from "./CharacterInspectorDrawer";
 import { CoachChatDrawer } from "./CoachChatDrawer";
 import { CoachModal } from "./CoachModal";
+import { PlayerProfileDrawer } from "./PlayerProfileDrawer";
 import { InputBar } from "./InputBar";
 
 export function GamePage() {
   const selected = useGameStore((s) => s.selectedCharacterId);
   const coachSkill = useGameStore((s) => s.coachSkill);
   const coachOpen = useGameStore((s) => s.coachOpen);
+  const profileOpen = useGameStore((s) => s.profileOpen);
   const gameState = useGameStore((s) => s.gameState);
   const sendMessage = useGameStore((s) => s.sendMessage);
   const isLoading = useGameStore((s) => s.isLoading);
+  const toggleProfile = useGameStore((s) => s.toggleProfile);
 
   const leaveScene = () => {
     if (!isLoading) {
@@ -62,6 +65,20 @@ export function GamePage() {
         </AnimatePresence>
         <AnimatePresence>
           {coachOpen && <CoachChatDrawer />}
+        </AnimatePresence>
+        <AnimatePresence>
+          {profileOpen && (
+            <motion.div
+              key="profile"
+              initial={{ x: 400 }}
+              animate={{ x: 0 }}
+              exit={{ x: 400 }}
+              transition={{ type: "spring", damping: 28, stiffness: 260 }}
+              className="absolute right-0 top-0 h-full w-80"
+            >
+              <PlayerProfileDrawer onClose={toggleProfile} />
+            </motion.div>
+          )}
         </AnimatePresence>
       </div>
       <AnimatePresence>{coachSkill && <CoachModal skill={coachSkill} />}</AnimatePresence>

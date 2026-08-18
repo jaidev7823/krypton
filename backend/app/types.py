@@ -154,8 +154,38 @@ class PlayerSetup(PermissiveModel):
     timestamp: str = ""
 
 
+class PlayerProfile(PermissiveModel):
+    """Living document tracking who the player IS, what they HAVE, what they KNOW,
+    and what they've LEARNED. Updated every turn. Used by feasibility check,
+    coach, and displayed to the player."""
+
+    # --- World State ---
+    status: str = ""              # "Student", "NPA Intern", "Private Investigator"
+    affiliation: str = ""         # "None", "NPA", "Task Force"
+    cash: int = 0
+    items: list[str] = Field(default_factory=list)
+    documents: list[str] = Field(default_factory=list)
+    debts: list[str] = Field(default_factory=list)
+    obligations: list[str] = Field(default_factory=list)
+    exposure: list[str] = Field(default_factory=list)
+    can_go: list[str] = Field(default_factory=list)
+    cannot_go: list[str] = Field(default_factory=list)
+    can_meet: list[str] = Field(default_factory=list)
+    cannot_meet: list[str] = Field(default_factory=list)
+    knowledge: list[str] = Field(default_factory=list)
+    connections: list[str] = Field(default_factory=list)
+    public_perception: str = "unknown student"
+    faction_views: dict[str, str] = Field(default_factory=dict)
+
+    # --- Learning Journey ---
+    concepts_used: dict[str, dict] = Field(default_factory=dict)
+    concept_history: list[dict] = Field(default_factory=list)
+    missed_opportunities: list[dict] = Field(default_factory=list)
+    growth_markers: list[str] = Field(default_factory=list)
+
+
 # ---------------------------------------------------------------------------
-# Piece 3: R1 / R2 / R3 contracts
+# Piece 3: R1 / R2 contracts
 # ---------------------------------------------------------------------------
 
 class SkillFeedback(PermissiveModel):
@@ -166,6 +196,8 @@ class SkillFeedback(PermissiveModel):
     how_properly_used: str = ""
     player_intent: str = ""
     feedback_for_player: str = ""
+    missed_concepts: list[str] = Field(default_factory=list)
+    missed_context: str = ""
 
 
 class StatChange(PermissiveModel):
@@ -234,6 +266,9 @@ class CharacterBrainOutput(PermissiveModel):
     problem_solving_framework: str = ""
     silent_observations: list[ObserverMemory] = Field(default_factory=list)
     scene_suggestion: Optional[SceneExitHook] = None
+    profile_updates: dict[str, Any] = Field(default_factory=dict)
+    access_granted: list[dict[str, str]] = Field(default_factory=list)
+    access_denied: list[dict[str, str]] = Field(default_factory=list)
 
 
 class SceneDirectionOutput(PermissiveModel):
@@ -425,3 +460,4 @@ class TurnResponse(PermissiveModel):
     strategic_plan: str = ""
     mission: Optional[Mission] = None
     debrief: Optional[MissionDebrief] = None
+    player_profile: Optional[PlayerProfile] = None

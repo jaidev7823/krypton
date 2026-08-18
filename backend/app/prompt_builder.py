@@ -334,29 +334,30 @@ def build_feasibility_check_prompt(
     character_states: dict[str, Any],
     action_text: str,
     events: list[str],
-    conversation: list[dict[str, str]] | None = None,
+    player_profile: dict[str, Any] | None = None,
     commitments: list[dict[str, Any]] | None = None,
 ) -> tuple[str, dict]:
     system = (
         "You are the Feasibility Guide for a living world simulation.\n"
         "Your job: tell the player if their action is realistic RIGHT NOW.\n"
-        "DEFAULT TO YES. Only block an action when there is a clear, concrete barrier "
-        "(locked door, hostile character, no access, physically impossible).\n"
-        "Rules:\n"
-        "1. If an NPC just INVITED the player somewhere, PROMISED to meet them, or OFFERED "
-        "an introduction in the recent conversation, that action is AUTOMATICALLY FEASIBLE — "
-        "even if the world bible normally gates access. The NPC's words override the default.\n"
-        "2. If an open commitment exists (NPC promised to do something), the player acting on "
+        "You have the PLAYER PROFILE — a structured record of who they are, "
+        "what they have, where they can go, who they can meet, and what they know.\n"
+        "Use this profile as your PRIMARY source. Do NOT rely on general knowledge.\n"
+        "\nRules:\n"
+        "1. Check can_go/cannot_go for location access. If the player's action involves "
+        "going somewhere, it MUST be in can_go. If it's in cannot_go, it's blocked.\n"
+        "2. Check can_meet/cannot_meet for character access. If the player wants to meet "
+        "someone, they MUST be in can_meet. If they're in cannot_meet, explain why.\n"
+        "3. Check knowledge for information-dependent actions. If the player needs to "
+        "know something (e.g. what L looks like) and it's NOT in knowledge, block it.\n"
+        "4. Check items/documents for equipment-dependent actions. If the player needs "
+        "a badge, warrant, etc. and doesn't have it, block it.\n"
+        "5. If an open commitment exists (NPC promised to do something), the player acting on "
         "that promise is AUTOMATICALLY FEASIBLE.\n"
-        "3. The player's starting_position tells you where they are now. Moving to a nearby, "
-        "public, unlocked location is feasible. Walking into a restricted area without "
-        "permission is not.\n"
-        "4. Be lenient about social clearance — if the player has been talking to someone and "
-        "building rapport, that character is more likely to let them in or make introductions.\n"
-        "5. When blocked, suggest 1-3 actions the player CAN do right now, grounded in the "
-        "conversation context (not just raw access metadata).\n"
-        "6. Never reject an action just because the world bible says 'meetability=indirect' — "
-        "check if the conversation has already created a path.\n"
+        "6. DEFAULT TO YES when the profile doesn't explicitly block the action.\n"
+        "7. When blocked, suggest 1-3 actions the player CAN do based on their current "
+        "profile (can_go, can_meet, knowledge, items).\n"
+        "8. NEVER reject an action that the profile says is allowed.\n"
         "- Output ONLY JSON matching the schema exactly."
     )
     access_metadata = []
@@ -369,11 +370,10 @@ def build_feasibility_check_prompt(
             "where": char.access.where,
             "grants": char.access.grants,
         })
-    recent_conv = (conversation or [])[-12:]
     user = {
         "task": "Check if this action is feasible right now.",
         "player_action": action_text,
-        "player_profile": {
+        "player_profile": player_profile or {
             "name": player.character_name,
             "background": player.background,
             "starting_position": player.starting_position,
@@ -381,7 +381,6 @@ def build_feasibility_check_prompt(
         "world_name": world.world.name,
         "world_rules": world.world.rules,
         "character_access": access_metadata,
-        "recent_conversation": recent_conv,
         "open_commitments": [c for c in (commitments or []) if c.get("status") == "open"],
         "recent_events": events[-5:] if events else [],
         "output_schema": {
@@ -534,6 +533,9 @@ def build_r1_prompt(
         "- Judge how properly it was used given the player's background and personality.\n"
         "- If they used a skill well, praise them briefly. If they did NOT, clearly tell them "
         "what they did wrong and what they could do better.\n"
+        "- Also look for skills the player COULD have used but DIDN'T. If the situation "
+        "called for a specific skill (e.g. the player was facing a defensive character and "
+        "could have used LABELING but didn't), note it in missed_concepts with context.\n"
         "- You are a coach. You have NO influence on how characters react and NO influence on "
         "mission outcomes - only on the player's learning.\n"
         "- Never invent skills outside the bible.\n"
@@ -552,6 +554,8 @@ def build_r1_prompt(
             "how_properly_used": "str - quality of execution",
             "player_intent": "str - what the player is trying to achieve",
             "feedback_for_player": "str - one line: praise if they used a skill well, coaching if they did not",
+            "missed_concepts": ["skill ids from bible that could have been used but weren't"],
+            "missed_context": "str - what the player could have done differently (empty if no misses)",
         },
     }
     return system, user
@@ -633,6 +637,7 @@ def build_r2_prompt(
     new_player_input: str,
     addressed_to: Optional[str] = None,
     this_turn_before_you: list[dict[str, str]] | None = None,
+    player_profile: dict[str, Any] | None = None,
 ) -> tuple[str, dict]:
     stats = character.get("stats") or {}
     dynamics = character.get("relationship_dynamics", "")
@@ -681,7 +686,20 @@ def build_r2_prompt(
         "If other characters are present but staying silent this turn, note what you observe about each one in silent_observations "
         "(e.g. 'Matsuda shifted uncomfortably and avoided eye contact'). Only note characters you can genuinely observe.\n"
         "If during your dialogue you offered the player a concrete next step (e.g. 'I can introduce you to Chief Yagami'), "
-        "capture it in scene_suggestion. Do NOT invent offers you didn't make in your dialogue."
+        "capture it in scene_suggestion. Do NOT invent offers you didn't make in your dialogue.\n"
+        "\nPROFILE AWARENESS:\n"
+        "You can see the player's profile below — their status, what they have, where they can go, "
+        "who they can meet, and what they know. Use it to understand their current position in the world.\n"
+        "\nPROFILE UPDATES:\n"
+        "If during your dialogue you grant the player something (offer an invitation, give an item, "
+        "reveal information, introduce them to someone), output it in profile_updates and access_granted.\n"
+        "If you deny them something (refuse access, explain they can't do something), output it in access_denied.\n"
+        "Examples:\n"
+        '- You say "Follow me to the cafeteria" → access_granted: [{kind: "location", target: "NPA Cafeteria", reason: "Matsuda invited you"}]\n'
+        '- You say "You can\'t just walk into the Chief\'s office" → access_denied: [{kind: "location", target: "Chief\'s office", reason: "need direct invitation"}]\n'
+        '- You say "I\'ll introduce you to Chief Yagami" → profile_updates: {can_meet: ["SOICHIRO - Matsuda will introduce"]}, access_granted: [{kind: "character", target: "SOICHIRO", reason: "Matsuda will introduce you"}]\n'
+        '- You say "L doesn\'t just wander around" → access_denied: [{kind: "character", target: "L", reason: "L doesn\'t wander the streets, you need an introduction"}]\n'
+        "Only output profile_updates, access_granted, access_denied if you ACTUALLY say something that grants or denies access in your dialogue."
     )
     user = {
         "task": f"Act as {character.get('id')} and respond to the player for this turn.",
@@ -689,6 +707,7 @@ def build_r2_prompt(
         "full_conversation_this_mission": conversation,
         "new_player_input": new_player_input,
         "world_events": mission_context.get("events") or [],
+        "player_profile": player_profile or {},
         "output_schema": {
             "character_id": "your id",
             "reasoning": {
@@ -722,7 +741,24 @@ def build_r2_prompt(
                     "note": "str - one first-person line of what you noticed them doing/feeling while they stayed quiet"
                 }
             ],
-            "scene_suggestion": "null - normally null. Set it ONLY if you offered the player a concrete next step in your dialogue (e.g. 'Follow me to Chief Soichiro's office', 'I can introduce you to Yagami'). Format: {character: your id, suggestion: what you offered, context: brief surrounding context}. Do NOT invent offers you didn't make."
+            "scene_suggestion": "null - normally null. Set it ONLY if you offered the player a concrete next step in your dialogue (e.g. 'Follow me to Chief Soichiro's office', 'I can introduce you to Yagami'). Format: {character: your id, suggestion: what you offered, context: brief surrounding context}. Do NOT invent offers you didn't make.",
+            "profile_updates": {
+                "status": "str - ONLY set if you changed the player's status (e.g. 'you're hired')",
+                "affiliation": "str - ONLY set if you changed their organizational membership",
+                "cash": "int - ONLY set if you gave/ took money",
+                "items": ["ONLY set if you gave them a physical item"],
+                "documents": ["ONLY set if you gave them a document"],
+                "knowledge": ["ONLY set if you revealed a fact they didn't know"],
+                "connections": ["ONLY set if you described your relationship with them"],
+                "public_perception": "str - ONLY set if you changed how the public sees them",
+                "faction_views.NPA": "str - ONLY set if you changed how a specific group sees them"
+            },
+            "access_granted": [
+                {"kind": "location|character|knowledge", "target": "what was granted", "reason": "why"}
+            ],
+            "access_denied": [
+                {"kind": "location|character|knowledge", "target": "what was denied", "reason": "why"}
+            ]
         },
     }
     if addressed_to:

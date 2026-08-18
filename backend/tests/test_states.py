@@ -35,6 +35,7 @@ from app.types import (  # noqa: E402
     Commitment,
     Mission,
     MissionDebrief,
+    PlayerProfile,
     SceneDirectionOutput,
     SkillFeedback,
     StatChange,
@@ -399,5 +400,101 @@ def run_checks():
     print("\nALL STATE CHECKS PASSED")
 
 
+# ── Player Profile Tests ────────────────────────────────────────────
+
+def test_profile_init():
+    """Setup creates a player_profile with initial values."""
+    r = main._run_turn(TurnRequest(player_setup=json.loads(json.dumps(setup_json())),
+                                   new_player_input="", action="setup",
+                                   plan_text="Infiltrate NPA"))
+    sid = r.session_id
+    row = db_module.get_session(sid)
+    p = row.mission_state.get("player_profile", {})
+    check(isinstance(p, dict), "profile is a dict")
+    check(p.get("status") == "Student", "initial status is Student")
+    check(any("Class 3B" in g for g in (p.get("can_go") or [])),
+          "can_go includes starting position Class 3B")
+    check(p.get("cash") == 50000, "initial cash is 50000")
+
+
+def test_profile_in_turn_response():
+    """TurnResponse includes player_profile."""
+    r = main._run_turn(TurnRequest(player_setup=json.loads(json.dumps(setup_json())),
+                                   new_player_input="", action="setup",
+                                   plan_text="Infiltrate NPA"))
+    check(r.player_profile is not None, "turn response has player_profile")
+    check(r.player_profile.status == "Student", "profile status in response")
+
+
+def test_profile_update_on_turn():
+    """After a turn, profile should still be present (apply_profile_updates ran)."""
+    r = main._run_turn(TurnRequest(player_setup=json.loads(json.dumps(setup_json())),
+                                   new_player_input="", action="setup",
+                                   plan_text="Infiltrate NPA"))
+    sid = r.session_id
+    main._run_turn(TurnRequest(session_id=sid, action="declare_action",
+                               new_player_input="Talk to Matsuda"))
+    r2 = main._run_turn(TurnRequest(session_id=sid, new_player_input="Hello there"))
+    check(r2.player_profile is not None, "profile still present after live turn")
+    check(r2.player_profile.status == "Student", "profile status preserved")
+
+
+def test_profile_access_denied():
+    """If R2 denies access, the profile's cannot_go gets updated."""
+    original_call_json = llm_caller.call_json
+
+    def _fake_with_denial(system, user, schema, agent="", on_attempt=None):
+        if agent == "listener":
+            return SkillFeedback(did_use_concept=False)
+        if agent.startswith("brain:"):
+            cid = agent.split(":", 1)[1]
+            return CharacterBrainOutput(
+                character_id=cid,
+                reasoning=CharacterReasoning(
+                    personality="Warm", current_goal="Help", current_problem="None",
+                    current_strategy="Be friendly", relationship_state="OK",
+                    current_interaction="Talking",
+                ),
+                dialogue=f"{cid} says something",
+                memory="talked",
+                inner_thought="thinking",
+                tool_calls=[],
+                stat_changes=StatChanges(),
+                access_denied=[{"kind": "location", "target": "Chief's Office", "reason": "need direct invitation"}],
+            )
+        if agent == "feasibility_check":
+            return ActionFeasibility(feasible=True, reason="action ok")
+        if agent == "scene_director":
+            return SceneDirectionOutput(speakers=[cid] if cid else [], silenced=[], reason="good")
+        if agent == "world_tick":
+            from app.types import WorldTickOutput
+            return WorldTickOutput(tick=[], meanwhile_events=[], scene_hooks=[])
+        if agent == "mission_architect":
+            return None
+        raise AssertionError(f"unexpected agent {agent}")
+
+    llm_caller.call_json = _fake_with_denial
+    try:
+        r = main._run_turn(TurnRequest(player_setup=json.loads(json.dumps(setup_json())),
+                                       new_player_input="", action="setup",
+                                       plan_text="Infiltrate NPA"))
+        sid = r.session_id
+        main._run_turn(TurnRequest(session_id=sid, action="declare_action",
+                                   new_player_input="Talk to Matsuda"))
+        r2 = main._run_turn(TurnRequest(session_id=sid, new_player_input="Hello"))
+        row = db_module.get_session(sid)
+        p = row.mission_state.get("player_profile", {})
+        cannot = p.get("cannot_go") or []
+        check(any("Chief" in c for c in cannot),
+              "profile cannot_go includes denied location")
+    finally:
+        llm_caller.call_json = original_call_json
+
+
 if __name__ == "__main__":
     run_checks()
+    test_profile_init()
+    test_profile_in_turn_response()
+    test_profile_update_on_turn()
+    test_profile_access_denied()
+    print("\nALL PROFILE CHECKS PASSED")

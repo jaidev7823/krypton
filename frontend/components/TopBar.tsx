@@ -9,6 +9,7 @@ export function TopBar() {
   const mission = useGameStore((s) => s.mission);
   const gameState = useGameStore((s) => s.gameState);
   const toggleCoach = useGameStore((s) => s.toggleCoach);
+  const toggleProfile = useGameStore((s) => s.toggleProfile);
 
   return (
     <header className="flex h-14 shrink-0 items-center justify-between gap-4 border-b border-edge bg-surface px-4">
@@ -33,6 +34,14 @@ export function TopBar() {
       </div>
 
       <div className="flex shrink-0 items-center gap-2">
+        <button
+          type="button"
+          onClick={toggleProfile}
+          className="rounded-lg border border-edge bg-surface-2 px-3 py-1.5 text-xs font-semibold text-muted transition hover:border-accent/50 hover:text-ink"
+          title="View Player Profile"
+        >
+          Profile
+        </button>
         <button
           type="button"
           onClick={toggleCoach}

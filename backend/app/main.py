@@ -44,6 +44,7 @@ from .types import (
     Mission,
     MissionDebrief,
     MissionObjective,
+    PlayerProfile,
     PlayerSetup,
     SceneDirectionOutput,
     SceneExitHook,
@@ -288,7 +289,7 @@ def _run_feasibility_check(
     from .prompt_builder import build_feasibility_check_prompt
     system, user = build_feasibility_check_prompt(
         player, world, character_states, action_text, mission_state.get("events") or [],
-        conversation=conversation or [],
+        player_profile=mission_state.get("player_profile"),
         commitments=mission_state.get("commitments") or [],
     )
     try:
@@ -416,6 +417,7 @@ def _world_response(
         feasibility=feasibility,
         scene_hooks=scene_hooks or stored_hooks,
         strategic_plan=mission_state.get("strategic_plan", ""),
+        player_profile=PlayerProfile(**mission_state.get("player_profile", {})),
     )
 
 
@@ -447,6 +449,7 @@ def _live_response(
         events=mission_state.get("events") or [],
         feasibility=feasibility,
         mission=mission,
+        player_profile=PlayerProfile(**mission_state.get("player_profile", {})),
     )
 
 
@@ -526,6 +529,7 @@ def _run_turn(body: TurnRequest) -> TurnResponse:
         "commitments": [],
         "present_ids": [],
         "turns_elapsed": 0,
+        "player_profile": _init_player_profile(player),
     }
     conversation = row.conversation
 
@@ -596,6 +600,20 @@ def _run_turn(body: TurnRequest) -> TurnResponse:
     )
 
 
+def _init_player_profile(player: PlayerSetup) -> dict:
+    """Create the initial player profile from setup data."""
+    bg = (player.background or "").lower()
+    starting = player.starting_position or ""
+    can_go = [f"{starting} - starting position"] if starting else []
+    return PlayerProfile(
+        status="Student",
+        affiliation="None",
+        cash=50000,
+        can_go=can_go,
+        public_perception=f"unknown {bg}" if bg else "unknown student",
+    ).model_dump(mode="json")
+
+
 def _mission_cast(current_ids: list[str], character_states: dict) -> list[str]:
     return [cid for cid in current_ids if cid in character_states]
 
@@ -603,6 +621,81 @@ def _mission_cast(current_ids: list[str], character_states: dict) -> list[str]:
 def _sync_presence(character_states: dict, present_ids: list[str]) -> None:
     for cid, s in character_states.items():
         s["present"] = cid in present_ids
+
+
+def _apply_profile_updates(mission_state: dict, r1: SkillFeedback,
+                           r2_outputs: list[CharacterBrainOutput]) -> None:
+    """Merge R1 learning data and R2 profile/access updates into the player profile."""
+    profile = mission_state.setdefault("player_profile", _init_player_profile(PlayerSetup()))
+
+    # --- R1 → Learning Journey ---
+    turn_num = mission_state.get("turns_elapsed", 0)
+    if r1.concepts_used:
+        concepts = profile.setdefault("concepts_used", {})
+        for c in r1.concepts_used:
+            entry = concepts.setdefault(c, {"used": 0, "good": 0, "missed": 0, "proficiency": "novice"})
+            entry["used"] += 1
+            quality = (r1.how_properly_used or "").lower()
+            if quality in ("good", "excellent", "well"):
+                entry["good"] += 1
+            ratio = entry["good"] / max(1, entry["used"])
+            if ratio > 0.8:
+                entry["proficiency"] = "practiced"
+            elif ratio > 0.5:
+                entry["proficiency"] = "learning"
+            else:
+                entry["proficiency"] = "novice"
+        profile.setdefault("concept_history", []).append({
+            "turn": turn_num,
+            "concept": ", ".join(r1.concepts_used),
+            "context": r1.player_intent or "",
+            "quality": r1.how_properly_used or "",
+        })
+
+    if r1.missed_concepts:
+        concepts = profile.setdefault("concepts_used", {})
+        for c in r1.missed_concepts:
+            concepts.setdefault(c, {"used": 0, "good": 0, "missed": 0, "proficiency": "novice"})["missed"] += 1
+        profile.setdefault("missed_opportunities", []).append({
+            "turn": turn_num,
+            "concept": ", ".join(r1.missed_concepts),
+            "context": r1.missed_context or "",
+        })
+
+    # --- R2 → World State ---
+    list_keys = {"items", "documents", "debts", "obligations", "exposure",
+                 "can_go", "cannot_go", "can_meet", "cannot_meet", "knowledge", "connections"}
+    scalar_keys = {"status", "affiliation", "cash", "public_perception"}
+
+    for out in r2_outputs:
+        for k, v in (out.profile_updates or {}).items():
+            if k in list_keys:
+                lst = profile.setdefault(k, [])
+                items = v if isinstance(v, list) else [v]
+                for item in items:
+                    if isinstance(item, str) and item not in lst:
+                        lst.append(item)
+            elif k in scalar_keys:
+                profile[k] = v
+            elif k.startswith("faction_views."):
+                faction = k.split(".", 1)[1]
+                profile.setdefault("faction_views", {})[faction] = v
+
+        for grant in (out.access_granted or []):
+            kind = grant.get("kind", "knowledge")
+            key = {"location": "can_go", "character": "can_meet"}.get(kind, "knowledge")
+            entry = f"{grant.get('target', '')} - {grant.get('reason', '')}"
+            lst = profile.setdefault(key, [])
+            if entry not in lst:
+                lst.append(entry)
+
+        for denial in (out.access_denied or []):
+            kind = denial.get("kind", "location")
+            key = {"location": "cannot_go", "character": "cannot_meet"}.get(kind, "cannot_go")
+            entry = f"{denial.get('target', '')} - {denial.get('reason', '')}"
+            lst = profile.setdefault(key, [])
+            if entry not in lst:
+                lst.append(entry)
 
 
 def _run_live_turn(
@@ -684,6 +777,7 @@ def _run_live_turn(
             world_name=world.world.name,
             addressed_to=addressed_to,
             this_turn_before_you=in_turn_before,
+            player_profile=mission_state.get("player_profile"),
         )
         out = llm_caller.call_json(
             r2_system, r2_user, CharacterBrainOutput,
@@ -696,6 +790,7 @@ def _run_live_turn(
     for out in r2_outputs:
         apply_r2(character_states, out)
     apply_commitments(mission_state, r2_outputs)
+    _apply_profile_updates(mission_state, r1, r2_outputs)
     _sync_presence(character_states, present_ids)
 
     mission_state["turns_elapsed"] = int(mission_state.get("turns_elapsed") or 0) + 1
@@ -786,6 +881,7 @@ def _run_live_turn(
             scene_hooks=hooks,
             strategic_plan=mission_state.get("strategic_plan", ""),
             debrief=debrief,
+            player_profile=PlayerProfile(**mission_state.get("player_profile", {})),
         )
 
     return TurnResponse(
@@ -793,6 +889,7 @@ def _run_live_turn(
         turn=game_turn,
         game_state="live_scene",
         events=mission_state.get("events") or [],
+        player_profile=PlayerProfile(**mission_state.get("player_profile", {})),
     )
 
 
